@@ -1,360 +1,255 @@
-# Hello Crawlers — Automated Episode Discussion Bot: Implementation Plan
+# YouTube + Gemini Auto-Post Bot — Migration & Implementation Plan
 
-## Overview
+## Goal
 
-Extend the existing `hellocrawlers` Devvit mod tool to automatically detect new podcast episodes from the Hello Crawlers RSS feed, generate an in-character discussion post via the Claude API, publish it to r/hellocrawlers with appropriate flair, and manage pin rotation.
+Migrate from the `hellocrawlers`-specific Devvit app to a **generic, reusable** "YouTube + Gemini" bot that any subreddit can install and configure. Mods supply their own YouTube playlist, Gemini API key, system prompt, flair, and model preference. The YouTube Data API and Gemini API are both free-tier, making this a zero-cost automation for any community.
 
 ---
 
-## Architecture
+## What Changes vs. What Stays
+
+| Aspect | Current (hellocrawlers) | Target (generic) |
+|--------|------------------------|-------------------|
+| App name | `hellocrawlers` | `youtube-gemini-post` |
+| YouTube playlist ID | Hardcoded constant | **Installation setting** (mod-supplied) |
+| Google API key | App-level secret (developer-owned) | **Installation setting** (mod-supplied, secret) |
+| Gemini model | Hardcoded `gemini-2.0-flash` | **Installation setting** with default |
+| System prompt | Hardcoded DCC voice in `systemPrompt.ts` | **Installation setting** (mod-supplied text) |
+| Flair name | Hardcoded `Episode Discussion` | **Installation setting** (mod-supplied, optional) |
+| Target subreddit | Setting with default `hellocrawlers` | **Derived from context** (`context.subredditName`) |
+| Post title prefix | Hardcoded `[Episode Discussion]` | Controlled by the mod's prompt (no app-level prefix) |
+| Scheduler job | Unchanged | Unchanged |
+| Pin management | Unchanged | Unchanged |
+| Mop (nuke) tool | Unchanged | Unchanged |
+| YouTube API integration | Unchanged (parameterized) | Unchanged (parameterized) |
+| Gemini API integration | Unchanged (parameterized) | Unchanged (parameterized) |
+
+---
+
+## Architecture (post-migration)
 
 ```
 src/
-  main.ts              ← Existing entry point; add scheduler registration + menu trigger
-  nuke.ts              ← Existing mod tool (unchanged)
-  episodeChecker.ts    ← NEW: RSS fetch, parse, new-episode detection
-  claudeClient.ts      ← NEW: Claude API call with system prompt
-  postManager.ts       ← NEW: Reddit post creation, flair, pin/unpin logic
-  systemPrompt.ts      ← NEW: Exports the system prompt string (from SystemPrompt.md)
-  types.ts             ← NEW: Shared types (EpisodeData, etc.)
+  main.ts              ← Entry point: settings, scheduler, triggers, menu actions
+  episodeChecker.ts    ← YouTube Data API: fetch latest video from a playlist
+  claudeClient.ts      ← Gemini API: generate post content with user-supplied prompt
+  postManager.ts       ← Reddit: post creation, flair assignment, pin rotation
+  systemPrompt.ts      ← REMOVED (prompt now comes from settings)
+  types.ts             ← Shared types (unchanged)
+  nuke.ts              ← Mod tool (unchanged)
 ```
 
 ---
 
-## Phase 0 — Configuration & Secrets
+## Phase 0 — Rebrand & Rename
 
-### 0.1 Enable required Devvit capabilities
+### 0.1 `devvit.yaml`
 
-In `src/main.ts`, update the `Devvit.configure()` block:
-
-```typescript
-Devvit.configure({
-  redditAPI: true,
-  redis: true,
-  http: {
-    domains: [
-      'anchor.fm',           // RSS feed host
-      'api.anthropic.com',   // Claude API
-    ],
-  },
-});
+```yaml
+name: youtube-gemini-post
 ```
 
-> **Domain allow-listing:** Both `anchor.fm` and `api.anthropic.com` will be submitted for review on upload/playtest. `api.anthropic.com` is not on the global allowlist, so it must be explicitly requested. If Anchor redirects to another domain (e.g., `rss.art19.com`, `cdn.simplecast.com`), that domain must also be listed — test the RSS URL with `curl -Lv` to confirm the final domain.
+### 0.2 `package.json`
 
-### 0.2 Register app-level secret for Claude API key
+Change `"name"` from `"hellocrawlers"` to `"youtube-gemini-post"`.
 
-Add in `src/main.ts` (before the scheduler job):
+### 0.3 Purge hellocrawlers references
+
+Remove or genericize every remaining `hellocrawlers` reference:
+
+| File | What to change |
+|------|---------------|
+| `src/types.ts` | Update doc comment ("Hello Crawlers episode bot" → "YouTube + Gemini auto-post bot") |
+| `src/main.ts` | Remove default `'hellocrawlers'` from subreddit setting; update menu item descriptions |
+| `src/postManager.ts` | Remove hardcoded `'episode discussion'` string; accept flair name as parameter |
+| `src/claudeClient.ts` | Remove hardcoded model and `[Episode Discussion]` prefix; accept model and prompt as parameters |
+| `src/episodeChecker.ts` | Remove hardcoded `PLAYLIST_ID`; accept playlist ID as parameter |
+| `README.md` | Full rewrite for generic audience |
+| `PRIVACY_POLICY.md` | Update app name and description |
+| `TERMS_AND_CONDITIONS.md` | Update app name and description |
+
+### 0.4 `SystemPrompt.md` → `SystemPrompt.example.md`
+
+Rename and reframe as an **example prompt** that mods can copy and adapt. Add a header explaining its purpose:
+
+```markdown
+# Example System Prompt — Hello Crawlers (DCC Universe)
+
+> This is a sample system prompt used by r/hellocrawlers. Copy and adapt it for
+> your own community. Paste your finished prompt into the app's "System Prompt"
+> setting.
+
+(existing prompt content follows)
+```
+
+### 0.5 Delete `src/systemPrompt.ts`
+
+The hardcoded prompt export is replaced by the installation setting. Remove the file and its import in `claudeClient.ts`.
+
+---
+
+## Phase 1 — Settings Overhaul
+
+Replace the current two settings with a full mod-configurable set. All settings use `SettingScope.Installation` so each subreddit controls its own configuration.
+
+### 1.1 New settings definition (in `main.ts`)
 
 ```typescript
-import { Devvit, SettingScope } from '@devvit/public-api';
-
 Devvit.addSettings([
+  // --- API Access ---
   {
     type: 'string',
-    name: 'claudeApiKey',
-    label: 'Anthropic Claude API Key',
+    name: 'googleApiKey',
+    label: 'Google API Key',
+    helpText: 'Enables both YouTube Data API and Gemini. Free from Google Cloud Console.',
     isSecret: true,
-    scope: SettingScope.App,
+    scope: SettingScope.Installation,
+  },
+
+  // --- YouTube Source ---
+  {
+    type: 'string',
+    name: 'youtubePlaylistId',
+    label: 'YouTube Playlist ID',
+    helpText: 'The playlist to monitor for new videos (e.g., PL0WMaa8s_mXGb3089AMtiyvordHKAZKi9).',
+    scope: SettingScope.Installation,
+  },
+
+  // --- Gemini Configuration ---
+  {
+    type: 'string',
+    name: 'geminiModel',
+    label: 'Gemini Model',
+    helpText: 'Model ID for post generation. Default: gemini-2.0-flash (free tier).',
+    defaultValue: 'gemini-2.0-flash',
+    scope: SettingScope.Installation,
   },
   {
-    type: 'string',
-    name: 'subredditName',
-    label: 'Subreddit name (without r/)',
+    type: 'paragraph',
+    name: 'systemPrompt',
+    label: 'System Prompt',
+    helpText: 'Instructions for Gemini. Defines the voice, structure, and rules for generated posts. First line of output is used as the post title.',
     scope: SettingScope.Installation,
-    defaultValue: 'hellocrawlers',
+  },
+
+  // --- Reddit Post Options ---
+  {
+    type: 'string',
+    name: 'flairName',
+    label: 'Post Flair (optional)',
+    helpText: 'Exact name of a post flair template on this subreddit. Leave blank for no flair.',
+    defaultValue: '',
+    scope: SettingScope.Installation,
   },
 ]);
 ```
 
-After first playtest, set the secret:
+### 1.2 Settings removed
 
-```bash
-npx devvit settings set claudeApiKey
-```
+| Setting | Reason |
+|---------|--------|
+| `subredditName` | No longer needed — use `context.subredditName` at runtime |
 
----
+### 1.3 Key change: API key scope
 
-## Phase 1 — RSS Feed Parsing (`episodeChecker.ts`)
-
-### 1.1 Fetch the RSS feed
-
-```
-RSS URL: https://anchor.fm/s/103dbb9d4/podcast/rss
-```
-
-Use the global `fetch` available in Devvit server-side code:
-
-```typescript
-const RSS_URL = 'https://anchor.fm/s/103dbb9d4/podcast/rss';
-
-export async function fetchRssFeed(): Promise<string> {
-  const response = await fetch(RSS_URL);
-  if (!response.ok) {
-    throw new Error(`RSS fetch failed: ${response.status}`);
-  }
-  return response.text();
-}
-```
-
-### 1.2 Parse the XML (no external libraries)
-
-Devvit runs in a restricted environment — we cannot install arbitrary npm packages. We must parse the RSS XML with string/regex operations or a basic XML-to-object approach using the built-in DOMParser-like APIs if available, or simple regex extraction.
-
-**Strategy:** Extract the first `<item>` block (most recent episode) and pull out:
-
-| Field | XML Tag | Purpose |
-|-------|---------|---------|
-| `guid` | `<guid>` | Unique ID to detect new episodes |
-| `title` | `<title>` | Episode title |
-| `description` | `<description>` | Episode description/show notes (HTML-encoded) |
-| `pubDate` | `<pubDate>` | Publish date |
-| `link` | `<link>` | Episode URL |
-| `enclosure.url` | `<enclosure url="...">` | Audio file URL (optional) |
-| `itunes:episode` | `<itunes:episode>` | Episode number (optional) |
-
-```typescript
-export interface EpisodeData {
-  guid: string;
-  title: string;
-  description: string;  // cleaned/decoded HTML
-  pubDate: string;
-  link: string;
-  episodeNumber?: string;
-}
-
-export function parseLatestEpisode(xml: string): EpisodeData | null {
-  // Extract first <item>...</item>
-  const itemMatch = xml.match(/<item>([\s\S]*?)<\/item>/);
-  if (!itemMatch) return null;
-  const item = itemMatch[1];
-
-  const extract = (tag: string): string => {
-    // Handle CDATA: <tag><![CDATA[...]]></tag>
-    const cdataMatch = item.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`));
-    if (cdataMatch) return cdataMatch[1].trim();
-    // Handle plain text: <tag>...</tag>
-    const plainMatch = item.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`));
-    return plainMatch ? plainMatch[1].trim() : '';
-  };
-
-  return {
-    guid: extract('guid'),
-    title: extract('title'),
-    description: cleanHtml(extract('description')),
-    pubDate: extract('pubDate'),
-    link: extract('link'),
-    episodeNumber: extract('itunes:episode') || undefined,
-  };
-}
-```
-
-### 1.3 HTML entity decoding & stripping
-
-The `<description>` field often contains HTML. Write a `cleanHtml()` helper to:
-
-- Decode `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#39;`, `&nbsp;`
-- Strip HTML tags (keep text content)
-- Collapse whitespace
-
-This cleaned description is what gets sent to Claude as context.
-
-### 1.4 New-episode detection via Redis
-
-**Redis keys used:**
-
-| Key | Type | Purpose |
-|-----|------|---------|
-| `last_episode_guid` | string | GUID of most recent processed episode |
-| `last_episode_post_id` | string | Reddit post ID (`t3_xxx`) of the current pinned episode post |
-
-```typescript
-export async function isNewEpisode(
-  redis: RedisClient,
-  episode: EpisodeData
-): Promise<boolean> {
-  const lastGuid = await redis.get('last_episode_guid');
-  return lastGuid !== episode.guid;
-}
-```
+The Google API key moves from `SettingScope.App` (developer-owned, shared across all installs) to `SettingScope.Installation` (each mod supplies their own). This is critical for a generic app — we cannot share a single API key across unknown subreddits.
 
 ---
 
-## Phase 2 — Claude API Integration (`claudeClient.ts`)
+## Phase 2 — Parameterize Hardcoded Values
 
-### 2.1 System prompt
+Each module currently uses top-level constants. These become function parameters sourced from settings.
 
-Export the system prompt from `SystemPrompt.md` as a TypeScript string constant in `src/systemPrompt.ts`. This keeps it maintainable:
+### 2.1 `episodeChecker.ts`
 
+**Before:**
 ```typescript
-export const SYSTEM_PROMPT = `You are the System AI from the Dungeon Crawler Carl universe...`;
-// (full content of SystemPrompt.md)
+const PLAYLIST_ID = 'PL0WMaa8s_mXGb3089AMtiyvordHKAZKi9';
+
+export async function fetchLatestYouTubeEpisode(apiKey: string): Promise<EpisodeData | null> {
+  // uses PLAYLIST_ID
+}
 ```
 
-### 2.2 Claude API call
+**After:**
+```typescript
+export async function fetchLatestYouTubeEpisode(
+  apiKey: string,
+  playlistId: string
+): Promise<EpisodeData | null> {
+  // uses playlistId parameter
+}
+```
 
+Remove the `PLAYLIST_ID` constant entirely.
+
+### 2.2 `claudeClient.ts`
+
+**Before:**
 ```typescript
 import { SYSTEM_PROMPT } from './systemPrompt.js';
-
-const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
-const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
-
-export interface ClaudeResponse {
-  title: string;   // first line of response
-  body: string;    // rest of the response
-}
+const GEMINI_MODEL = 'gemini-2.0-flash';
 
 export async function generateEpisodePost(
   apiKey: string,
   episode: EpisodeData
-): Promise<ClaudeResponse> {
-  const userMessage = buildUserMessage(episode);
-
-  const response = await fetch(CLAUDE_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: CLAUDE_MODEL,
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: [
-        { role: 'user', content: userMessage },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Claude API error ${response.status}: ${errText}`);
-  }
-
-  const data = await response.json();
-  const fullText: string = data.content[0].text;
-
-  // Split title from body (first line is title per system prompt instructions)
-  const [titleLine, ...bodyLines] = fullText.split('\n');
-  const title = titleLine
-    .replace(/^\[Episode Discussion\]\s*/i, '')
-    .trim();
-
-  return {
-    title: `[Episode Discussion] ${title || episode.title}`,
-    body: bodyLines.join('\n').trim(),
-  };
-}
+): Promise<GeneratedPost> { ... }
 ```
 
-### 2.3 User message construction
-
+**After:**
 ```typescript
-function buildUserMessage(episode: EpisodeData): string {
-  return [
-    `New episode released:`,
-    ``,
-    `**Episode Title:** ${episode.title}`,
-    episode.episodeNumber ? `**Episode Number:** ${episode.episodeNumber}` : '',
-    `**Published:** ${episode.pubDate}`,
-    `**Link:** ${episode.link}`,
-    ``,
-    `**Episode Description (cleaned):**`,
-    episode.description,
-    ``,
-    `Please generate the full discussion post (title + body) following the post structure in your instructions.`,
-  ].filter(Boolean).join('\n');
-}
+// No import of systemPrompt.js
+
+export async function generateEpisodePost(
+  apiKey: string,
+  episode: EpisodeData,
+  systemPrompt: string,
+  geminiModel: string
+): Promise<GeneratedPost> { ... }
 ```
 
----
+Remove the `GEMINI_MODEL` constant and the `systemPrompt.js` import.
 
-## Phase 3 — Reddit Post Management (`postManager.ts`)
+**Title parsing change:** The `parseGeneratedResponse` function currently enforces a `[Episode Discussion]` prefix. Since the mod's prompt controls the title format, remove this enforcement. Simply use the first non-empty line as the title and the rest as the body — no prefix injection.
 
-### 3.1 Submit the post
+### 2.3 `postManager.ts`
 
+**Before:**
 ```typescript
-export async function createEpisodePost(
-  reddit: RedditAPIClient,
+export async function applyEpisodeFlair(
+  reddit: RedditClient,
   subredditName: string,
-  title: string,
-  body: string,
-): Promise<Post> {
-  const post = await reddit.submitPost({
-    title,
-    subredditName,
-    text: body,            // selftext/markdown body
-    sendreplies: true,
-  });
-  return post;
+  postId: string
+): Promise<void> {
+  // hardcoded match: 'episode discussion'
 }
 ```
 
-### 3.2 Apply "Episode Discussion" flair
-
-The flair must already exist on the subreddit. Apply it by flair text:
-
+**After:**
 ```typescript
 export async function applyFlair(
-  reddit: RedditAPIClient,
+  reddit: RedditClient,
   subredditName: string,
   postId: string,
+  flairName: string
 ): Promise<void> {
-  // Get available flairs
+  if (!flairName) return; // no flair configured — skip silently
+
   const flairs = await reddit.getPostFlairTemplates(subredditName);
-  const episodeFlair = flairs.find(
-    (f) => f.text?.toLowerCase() === 'episode discussion'
+  const match = flairs.find(
+    (f) => (f.text ?? '').toLowerCase().trim() === flairName.toLowerCase().trim()
   );
-
-  if (episodeFlair) {
-    await reddit.setPostFlair({
-      subredditName,
-      postId,
-      flairTemplateId: episodeFlair.id,
-    });
-  } else {
-    console.warn('⚠ "Episode Discussion" flair template not found on subreddit');
-  }
+  // ...
 }
 ```
 
-> **Pre-requisite:** Create an "Episode Discussion" post flair in subreddit settings before running the bot.
-
-### 3.3 Pin new post & unpin previous
-
-Reddit allows a maximum of **2 sticky posts**. We use sticky slot 1 for episode discussions.
-
-```typescript
-export async function managePins(
-  reddit: RedditAPIClient,
-  redis: RedisClient,
-  newPostId: string,
-): Promise<void> {
-  // Unpin the previous episode post
-  const previousPostId = await redis.get('last_episode_post_id');
-  if (previousPostId) {
-    try {
-      const prevPost = await reddit.getPostById(previousPostId);
-      await prevPost.unsticky();
-      console.log(`Unpinned previous post: ${previousPostId}`);
-    } catch (e) {
-      console.warn(`Could not unpin previous post ${previousPostId}: ${e}`);
-    }
-  }
-
-  // Pin the new post
-  const newPost = await reddit.getPostById(newPostId);
-  await newPost.sticky();
-  console.log(`Pinned new post: ${newPostId}`);
-}
-```
+Function renamed from `applyEpisodeFlair` to `applyFlair` to reflect its generic purpose.
 
 ---
 
-## Phase 4 — Scheduler Job (in `main.ts`)
+## Phase 3 — Update Orchestration (`main.ts`)
 
-### 4.1 Register the scheduler job
+### 3.1 Scheduler job — read settings and pass through
 
 ```typescript
 Devvit.addSchedulerJob({
@@ -363,220 +258,168 @@ Devvit.addSchedulerJob({
     const { redis, reddit, settings } = context;
 
     try {
-      // 1. Fetch & parse RSS
-      const xml = await fetchRssFeed();
-      const episode = parseLatestEpisode(xml);
-      if (!episode) {
-        console.log('No episodes found in RSS feed');
+      // Read all settings
+      const googleApiKey = await settings.get<string>('googleApiKey');
+      const playlistId = await settings.get<string>('youtubePlaylistId');
+      const geminiModel = (await settings.get<string>('geminiModel')) || 'gemini-2.0-flash';
+      const systemPrompt = await settings.get<string>('systemPrompt');
+      const flairName = (await settings.get<string>('flairName')) || '';
+
+      // Validate required settings
+      if (!googleApiKey || !playlistId || !systemPrompt) {
+        console.error('[bot] Missing required settings (googleApiKey, youtubePlaylistId, or systemPrompt).');
         return;
       }
 
-      // 2. Check if this is a new episode
-      if (!(await isNewEpisode(redis, episode))) {
-        console.log(`No new episode. Current: ${episode.guid}`);
-        return;
-      }
+      // Use context.subredditName instead of a setting
+      const subredditName = context.subredditName!;
 
-      console.log(`🆕 New episode detected: ${episode.title}`);
+      // Fetch → detect → generate → post → flair → pin (same flow, parameterized)
+      const episode = await fetchLatestYouTubeEpisode(googleApiKey, playlistId);
+      if (!episode) return;
+      if (!(await isNewEpisode(redis, episode))) return;
 
-      // 3. Get Claude API key
-      const claudeApiKey = await settings.get<string>('claudeApiKey');
-      if (!claudeApiKey) {
-        console.error('Claude API key not configured');
-        return;
-      }
-
-      // 4. Generate post content via Claude
-      const { title, body } = await generateEpisodePost(claudeApiKey, episode);
-
-      // 5. Get subreddit name
-      const subredditName =
-        (await settings.get<string>('subredditName')) || 'hellocrawlers';
-
-      // 6. Create the Reddit post
+      const { title, body } = await generateEpisodePost(googleApiKey, episode, systemPrompt, geminiModel);
       const post = await createEpisodePost(reddit, subredditName, title, body);
-      console.log(`📝 Created post: ${post.id}`);
 
-      // 7. Apply flair
-      await applyFlair(reddit, subredditName, post.id);
+      if (flairName) {
+        await applyFlair(reddit, subredditName, post.id, flairName);
+      }
 
-      // 8. Pin new / unpin old
       await managePins(reddit, redis, post.id);
-
-      // 9. Persist state
       await redis.set('last_episode_guid', episode.guid);
       await redis.set('last_episode_post_id', post.id);
-
-      console.log(`✅ Episode post complete: "${title}"`);
-    } catch (error) {
-      console.error('Episode checker failed:', error);
+    } catch (err) {
+      console.error('[bot] Episode checker failed:', err);
     }
   },
 });
 ```
 
-### 4.2 Schedule the recurring job (on app install)
-
-Use a trigger to start the cron when the app is installed on a subreddit:
-
-```typescript
-import { Devvit, type OnTriggerEvent } from '@devvit/public-api';
-
-Devvit.addTrigger({
-  event: 'AppInstall',
-  onEvent: async (_event: OnTriggerEvent, context) => {
-    const jobId = await context.scheduler.runJob({
-      name: 'check_new_episodes',
-      cron: '*/30 * * * *',  // Every 30 minutes
-    });
-    await context.redis.set('episode_checker_job_id', jobId);
-    console.log(`Scheduled episode checker: job ${jobId}`);
-  },
-});
-```
-
-### 4.3 Manual trigger (menu action)
-
-Add a mod menu action to force-check immediately (useful for testing):
+### 3.2 Menu action — update description
 
 ```typescript
 Devvit.addMenuItem({
-  label: 'Check for new episodes',
-  description: 'Manually check the Hello Crawlers RSS feed for new episodes',
+  label: 'Check for new videos',
+  description: 'Manually check the YouTube playlist for new videos and generate a post.',
   location: 'subreddit',
   forUserType: 'moderator',
-  onPress: async (_event, context) => {
-    context.ui.showToast('Checking for new episodes...');
-
-    // Schedule a one-off job that runs immediately
-    await context.scheduler.runJob({
-      name: 'check_new_episodes',
-      runAt: new Date(),
-    });
-
-    context.ui.showToast('Episode check triggered. Watch logs for results.');
-  },
+  // ...
 });
 ```
 
----
+### 3.3 Log prefix
 
-## Phase 5 — Error Handling & Edge Cases
-
-| Scenario | Handling |
-|----------|----------|
-| RSS feed down / timeout | Catch error, log, retry on next cron cycle |
-| Claude API rate-limited or down | Catch error, log, retry on next cycle |
-| Claude returns malformed output | Fall back to using the episode title directly and a minimal template body |
-| "Episode Discussion" flair missing | Log warning; post is still created without flair |
-| No previous pinned post (first run) | Skip unpin step; only pin the new post |
-| Duplicate detection race condition | Redis `last_episode_guid` acts as idempotency key; checked before API calls |
-| RSS returns same episode GUID | Early return — no action taken |
-| HTTP fetch 30s timeout (Devvit limit) | Ensure both RSS + Claude calls complete within budget; Claude's `max_tokens: 1024` keeps response fast |
-| Post created but flair/pin fails | Post still exists; log error. Next cycle won't reprocess (GUID already saved). Mod can manually fix via menu action. |
-
-**Recommendation:** Save `last_episode_guid` *after* successful post creation to avoid losing the post if something fails mid-flow. If flair or pin fails, the post is still published — these are recoverable by a moderator.
+Change `[episodeBot]` → `[bot]` or `[yt-gemini]` throughout — no hello-crawlers branding.
 
 ---
 
-## Phase 6 — Testing Strategy
+## Phase 4 — Documentation
 
-### 6.1 Local playtest
+### 4.1 `README.md` — full rewrite
 
-```bash
-npm run dev
-```
+Target audience: a mod who has never seen this app before. Cover:
 
-This starts a playtest session on the test subreddit. Use the manual "Check for new episodes" menu action to trigger immediately.
+- What the app does (one paragraph)
+- Setup steps: install → set Google API key → set playlist ID → write a system prompt → (optional) set flair and model
+- How to get a free Google API key (link to Cloud Console, enable YouTube Data API v3 + Generative Language API)
+- Settings reference table
+- Commands table (`npm run dev`, etc.)
+- Redis keys table
+- Link to `SystemPrompt.example.md` as a starting template
 
-### 6.2 Test with logs
+### 4.2 `PRIVACY_POLICY.md` / `TERMS_AND_CONDITIONS.md`
 
-```bash
-npx devvit logs <test-subreddit> --since=1h --verbose
-```
-
-### 6.3 Test checklist
-
-- [ ] RSS feed fetches successfully
-- [ ] XML parsing extracts correct episode data
-- [ ] New episode detection works (first run + subsequent runs)
-- [ ] Claude API call succeeds with valid response
-- [ ] Post is created with correct title and body
-- [ ] "Episode Discussion" flair is applied
-- [ ] New post is pinned
-- [ ] Previous post is unpinned
-- [ ] Redis state is persisted correctly
-- [ ] Cron job runs on schedule
-- [ ] Manual trigger works from subreddit menu
-- [ ] Error cases are logged cleanly (RSS down, API key missing, etc.)
-
-### 6.4 Dry-run mode (optional enhancement)
-
-Consider adding an installation setting `dryRun` (boolean) that, when enabled, logs the would-be post content without actually creating it. Useful for validating Claude's output before going live.
+Replace `hellocrawlers` references with the generic app name.
 
 ---
 
-## Domain Allowlist Summary
+## Phase 5 — Cleanup
 
-| Domain | Purpose | Global Allowlist? |
-|--------|---------|-------------------|
-| `anchor.fm` | RSS feed | **No** — must request |
-| `api.anthropic.com` | Claude API | **No** — must request |
+### 5.1 Delete compiled `.js` files from source control
 
-> Test the RSS URL to confirm the final resolved domain. If it redirects (e.g., to `podcasters.spotify.com`), list that domain too.
+The `src/` directory currently contains both `.ts` and `.js` files. Add `src/*.js` to `.gitignore` and remove the tracked `.js` files.
+
+### 5.2 Delete `src/systemPrompt.ts` and `src/systemPrompt.js`
+
+No longer needed — the prompt comes from settings.
+
+### 5.3 `SystemPrompt.md` → `SystemPrompt.example.md`
+
+Rename and add the example header (see Phase 0.4).
 
 ---
 
-## Redis Key Reference
+## Implementation Order
+
+| # | Task | Files Touched | Depends On |
+|---|------|---------------|------------|
+| 1 | Rename app in `devvit.yaml` and `package.json` | `devvit.yaml`, `package.json` | — |
+| 2 | Replace settings block in `main.ts` | `src/main.ts` | — |
+| 3 | Parameterize `episodeChecker.ts` (accept `playlistId`) | `src/episodeChecker.ts` | — |
+| 4 | Parameterize `claudeClient.ts` (accept `systemPrompt`, `geminiModel`; remove prefix logic) | `src/claudeClient.ts` | — |
+| 5 | Parameterize `postManager.ts` (accept `flairName`; rename function) | `src/postManager.ts` | — |
+| 6 | Update scheduler job and menu action in `main.ts` | `src/main.ts` | 2, 3, 4, 5 |
+| 7 | Delete `src/systemPrompt.ts` + `.js` | `src/systemPrompt.ts`, `src/systemPrompt.js` | 4, 6 |
+| 8 | Rename `SystemPrompt.md` → `SystemPrompt.example.md` | `SystemPrompt.md` | — |
+| 9 | Remove tracked `.js` files; update `.gitignore` | `src/*.js`, `.gitignore` | — |
+| 10 | Rewrite `README.md` | `README.md` | All above |
+| 11 | Update `PRIVACY_POLICY.md`, `TERMS_AND_CONDITIONS.md` | Legal docs | 1 |
+| 12 | Update `types.ts` doc comments | `src/types.ts` | — |
+
+---
+
+## Settings Reference (post-migration)
+
+| Name | Type | Scope | Secret | Default | Purpose |
+|------|------|-------|--------|---------|---------|
+| `googleApiKey` | string | Installation | **Yes** | — | Google API key (YouTube + Gemini) |
+| `youtubePlaylistId` | string | Installation | No | — | YouTube playlist to monitor |
+| `geminiModel` | string | Installation | No | `gemini-2.0-flash` | Gemini model for generation |
+| `systemPrompt` | paragraph | Installation | No | — | Full system prompt for Gemini |
+| `flairName` | string | Installation | No | *(empty)* | Post flair to apply (exact match) |
+
+---
+
+## Redis Keys (unchanged)
 
 | Key | Value | Purpose |
 |-----|-------|---------|
-| `last_episode_guid` | string (GUID) | Deduplication — tracks most recent processed episode |
-| `last_episode_post_id` | string (`t3_xxx`) | Post ID of the currently pinned episode discussion |
-| `episode_checker_job_id` | string (job ID) | Scheduler job ID for potential cancellation |
+| `last_episode_guid` | string (video ID) | Deduplication — last processed video |
+| `last_episode_post_id` | string (post ID) | Currently pinned post |
+| `episode_checker_job_id` | string (job ID) | Scheduler job for cancellation |
 
 ---
 
-## Settings Reference
+## Domain Allowlist (unchanged)
 
-| Name | Scope | Type | Secret | Purpose |
-|------|-------|------|--------|---------|
-| `claudeApiKey` | App (global) | string | **Yes** | Anthropic API key |
-| `subredditName` | Installation | string | No | Target subreddit (default: `hellocrawlers`) |
+| Domain | Purpose | Global Allowlist? |
+|--------|---------|-------------------|
+| `youtube.googleapis.com` | YouTube Data API v3 | **Yes** |
+| `generativelanguage.googleapis.com` | Gemini API | **Yes** |
 
----
-
-## File-by-File Implementation Order
-
-| # | File | Action | Depends On |
-|---|------|--------|------------|
-| 1 | `src/types.ts` | Create shared types (`EpisodeData`, etc.) | — |
-| 2 | `src/systemPrompt.ts` | Export system prompt as string constant | `SystemPrompt.md` |
-| 3 | `src/episodeChecker.ts` | RSS fetch, XML parse, `cleanHtml`, `isNewEpisode` | types.ts |
-| 4 | `src/claudeClient.ts` | Claude API call, response parsing | types.ts, systemPrompt.ts |
-| 5 | `src/postManager.ts` | `createEpisodePost`, `applyFlair`, `managePins` | types.ts |
-| 6 | `src/main.ts` | Wire everything: `Devvit.configure`, settings, scheduler job, trigger, menu action | All above |
-| 7 | `SystemPrompt.md` | No changes needed | — |
-| 8 | `src/nuke.ts` | No changes needed | — |
+Both domains are on the Devvit global allowlist. No additional approval needed.
 
 ---
 
-## Deployment Checklist
+## Error Handling (unchanged)
 
-1. **Create flair:** Ensure "Episode Discussion" post flair exists on r/hellocrawlers
-2. **Set API key:** `npx devvit settings set claudeApiKey` (after first playtest)
-3. **Verify domains:** Confirm `anchor.fm` and `api.anthropic.com` are approved in Developer Settings
-4. **Test manually:** Use the "Check for new episodes" menu action on the test subreddit
-5. **Review logs:** `npx devvit logs <subreddit> --since=1h`
-6. **Deploy:** `npm run deploy` (upload) → `npm run launch` (publish)
+| Scenario | Handling |
+|----------|----------|
+| Missing settings | Log error, return early — no crash |
+| YouTube API down | Catch, log, retry next cron cycle |
+| Gemini API down | Catch, log, retry next cron cycle |
+| Flair template not found | Log warning, post created without flair |
+| Pin fails | Log error, post still exists |
+| Duplicate video ID | Early return via Redis check |
 
 ---
 
-## Future Enhancements (Optional)
+## Future Enhancements
 
-- **Dry-run mode** — Installation setting to preview posts without publishing
-- **Configurable cron** — Let mods adjust check frequency via settings
-- **Episode history** — Store all processed episode GUIDs in a Redis sorted set for audit
-- **Notification** — Send modmail when a new episode post is created
-- **Retry queue** — If Claude fails, queue the episode GUID for retry on next cycle
-- **Multiple podcast support** — Generalize to support multiple RSS feed URLs
+- **YouTube source types** — Support channel IDs (auto-resolve to uploads playlist), individual video IDs, and search queries
+- **Configurable cron** — Let mods adjust check frequency via a setting
+- **Dry-run mode** — Preview generated posts without publishing
+- **Multi-playlist** — Monitor multiple playlists with different prompts
+- **Post template fallback** — If Gemini fails, use a simple template with just the video embed and metadata
+- **Modmail notification** — Alert mods when a new post is created
