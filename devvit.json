@@ -1,0 +1,23 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "youtube-gemini",
+  "blocks": {
+    "entry": "src/main.ts"
+  },
+  "permissions": {
+    "reddit": {
+      "enable": true
+    },
+    "redis": true,
+    "http": {
+      "enable": true,
+      "domains": [
+        "youtube.googleapis.com",
+        "generativelanguage.googleapis.com"
+      ]
+    }
+  },
+  "marketingAssets": {
+    "icon": "assets/icon.png"
+  }
+}
