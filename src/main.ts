@@ -16,20 +16,10 @@ Devvit.configure({
 });
 
 // ---------------------------------------------------------------------------
-// App settings — all Installation-scoped so each subreddit configures its own
+// App settings — Installation-scoped so each subreddit configures its own
 // ---------------------------------------------------------------------------
 
 Devvit.addSettings([
-  // --- API Access ---
-  {
-    type: 'string',
-    name: 'googleApiKey',
-    label: 'Google API Key (YouTube Data API + Gemini)',
-    helpText: 'Free from Google Cloud Console. Enable YouTube Data API v3 and Generative Language API.',
-    isSecret: true,
-    scope: SettingScope.App,
-  },
-
   // --- YouTube Source ---
   {
     type: 'string',
@@ -112,6 +102,48 @@ Devvit.addSettings([
 
 
 // ---------------------------------------------------------------------------
+// Google API key management — stored in Redis, set via mod menu
+// ---------------------------------------------------------------------------
+
+const REDIS_KEY_GOOGLE_API_KEY = 'google_api_key';
+
+const apiKeyForm = Devvit.createForm(
+  {
+    title: 'Set Google API Key',
+    description: 'Your key is stored in this subreddit\'s Redis store. Get a free key from Google Cloud Console with YouTube Data API v3 and Generative Language API enabled.',
+    fields: [
+      {
+        type: 'string',
+        name: 'apiKey',
+        label: 'Google API Key',
+        required: true,
+      },
+    ],
+    acceptLabel: 'Save',
+    cancelLabel: 'Cancel',
+  },
+  async ({ values }, context) => {
+    const key = values.apiKey?.trim();
+    if (!key) {
+      context.ui.showToast('API key cannot be empty.');
+      return;
+    }
+    await context.redis.set(REDIS_KEY_GOOGLE_API_KEY, key);
+    context.ui.showToast('Google API key saved.');
+  }
+);
+
+Devvit.addMenuItem({
+  label: 'Set Google API Key',
+  description: 'Store your Google API key (YouTube + Gemini) for this subreddit.',
+  location: 'subreddit',
+  forUserType: 'moderator',
+  onPress: (_event, context) => {
+    context.ui.showForm(apiKeyForm);
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Video checker — scheduler job
 // ---------------------------------------------------------------------------
 
@@ -122,7 +154,7 @@ Devvit.addSchedulerJob({
 
     try {
       // 1. Read all settings
-      const googleApiKey = await settings.get<string>('googleApiKey');
+      const googleApiKey = await redis.get(REDIS_KEY_GOOGLE_API_KEY);
       const playlistId = await settings.get<string>('youtubePlaylistId');
       const geminiModel = (await settings.get<string>('geminiModel')) || 'gemini-2.0-flash';
       const systemPrompt = await settings.get<string>('systemPrompt');
@@ -135,7 +167,7 @@ Devvit.addSchedulerJob({
 
       // 2. Validate required settings
       if (!googleApiKey) {
-        console.error('[bot] Google API key not configured. Set it in the app settings.');
+        console.error('[bot] Google API key not configured. Use the "Set Google API Key" mod menu item.');
         return;
       }
       if (!playlistId) {
@@ -270,7 +302,7 @@ Devvit.addSchedulerJob({
         return;
       }
 
-      const googleApiKey = await settings.get<string>('googleApiKey');
+      const googleApiKey = await redis.get(REDIS_KEY_GOOGLE_API_KEY);
       const geminiModel = (await settings.get<string>('geminiModel')) || 'gemini-2.0-flash';
       const systemPrompt = await settings.get<string>('systemPrompt');
       const botFlairEmoji = (await settings.get<string>('botFlairEmoji')) || '';
@@ -280,7 +312,7 @@ Devvit.addSchedulerJob({
       const appendText = (await settings.get<string>('appendText')) || '';
 
       if (!googleApiKey || !systemPrompt) {
-        console.error('[bot] Missing required settings (googleApiKey, systemPrompt).');
+        console.error('[bot] Missing required settings. Ensure Google API key is set via the mod menu and systemPrompt is configured.');
         return;
       }
 

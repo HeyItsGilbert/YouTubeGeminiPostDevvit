@@ -18,7 +18,6 @@ All settings are configured per subreddit in the app's installation settings.
 
 | Name | Type | Secret | Default | Description |
 |------|------|--------|---------|-------------|
-| `googleApiKey` | string | Yes | -- | Google API key (YouTube Data API + Gemini) |
 | `youtubePlaylistId` | string | No | -- | YouTube playlist ID to monitor |
 | `geminiModel` | string | No | `gemini-2.0-flash` | Gemini model for post generation |
 | `systemPrompt` | paragraph | No | -- | Full system prompt for Gemini (controls voice, structure, rules). The user message will include: **Title**, **Published**, **Link**, and **Description**. |
@@ -56,22 +55,15 @@ npm run dev
 
 This installs the app to your test subreddit and streams logs.
 
-### 3. Set the Google API Key (app-level secret)
+### 3. Set the Google API Key
 
-The Google API Key is an **app-level secret**, meaning it is set once by the app developer (not per-installation).
+Each subreddit stores its own Google API key via a mod menu action.
 
-1. Open a terminal in the project directory.
-2. Run the Devvit CLI command to set the secret:
+1. Navigate to your subreddit.
+2. Open the **Mod Tools** menu and select **Set Google API Key**.
+3. Paste your key into the masked input and click **Save**.
 
-   ```bash
-   npx devvit settings set googleApiKey
-   ```
-
-3. When prompted, paste your Google API key and press Enter.
-
-To get a key, visit the [Google Cloud Console](https://console.cloud.google.com/), create a project, and enable both the **YouTube Data API v3** and the **Generative Language API (Gemini)**. Then create an API key under **APIs & Services > Credentials**.
-
-> **Note:** Because this is an app-scoped secret, it is shared across all installations of the app. Individual subreddit moderators do not need to supply their own key.
+The key is stored in the subreddit's Redis store. To get a key, visit the [Google Cloud Console](https://console.cloud.google.com/), create a project, and enable both the **YouTube Data API v3** and the **Generative Language API (Gemini)**. Then create an API key under **APIs & Services > Credentials**.
 
 ### 4. Configure installation settings
 
