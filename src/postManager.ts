@@ -24,6 +24,48 @@ export async function createEpisodePost(
   return post;
 }
 
+// ----- Bot identity ---------------------------------------------------------
+
+/**
+ * Set the bot's author flair on the subreddit so each community can give it
+ * a unique display name and emoji icon.
+ */
+export async function applyBotFlair(
+  reddit: RedditClient,
+  subredditName: string,
+  emoji: string,
+  text: string
+): Promise<void> {
+  const flairText = [emoji, text].filter(Boolean).join(' ');
+  if (!flairText) return;
+
+  try {
+    const botUser = await reddit.getAppUser();
+    await reddit.setUserFlair({
+      subredditName,
+      username: botUser.username,
+      text: flairText,
+    });
+    console.log(`[postManager] Set bot flair to "${flairText}" for u/${botUser.username}`);
+  } catch (err) {
+    console.error(`[postManager] Failed to set bot flair: ${err}`);
+  }
+}
+
+// ----- Post editing ---------------------------------------------------------
+
+/**
+ * Edit the body of an existing post.
+ */
+export async function updateEpisodePost(
+  reddit: RedditClient,
+  postId: string,
+  body: string
+): Promise<void> {
+  const post = await reddit.getPostById(postId);
+  await post.edit({ text: body });
+}
+
 // ----- Flair ----------------------------------------------------------------
 
 /**
@@ -45,7 +87,7 @@ export async function applyFlair(
     );
 
     if (!match) {
-      console.warn(
+      console.error(
         `[postManager] Flair "${flairName}" not found on subreddit. ` +
         'Post will remain unflaired.'
       );
@@ -60,7 +102,7 @@ export async function applyFlair(
 
     console.log(`[postManager] Applied flair "${match.text}" to ${postId}`);
   } catch (err) {
-    console.error('[postManager] Failed to apply flair:', err);
+    console.error(`[postManager] Failed to apply flair: ${err}`);
   }
 }
 
@@ -86,9 +128,8 @@ export async function managePins(
       console.log(`[postManager] Unpinned previous post: ${previousPostId}`);
     } catch (err) {
       // The post may have been deleted or already unstickied — non-fatal
-      console.warn(
-        `[postManager] Could not unpin previous post ${previousPostId}:`,
-        err
+      console.error(
+        `[postManager] Could not unpin previous post ${previousPostId}: ${err}`
       );
     }
   }
@@ -99,7 +140,7 @@ export async function managePins(
     await newPost.sticky(1);
     console.log(`[postManager] Pinned new post: ${newPostId}`);
   } catch (err) {
-    console.error(`[postManager] Failed to pin new post ${newPostId}:`, err);
+    console.error(`[postManager] Failed to pin new post ${newPostId}: ${err}`);
     throw err; // rethrow — caller should know pinning failed
   }
 }

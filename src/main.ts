@@ -1,8 +1,8 @@
 import { Devvit, SettingScope } from "@devvit/public-api";
 
-import { fetchLatestYouTubeEpisode, isNewEpisode } from "./episodeChecker.js";
-import { generateEpisodePost } from "./claudeClient.js";
-import { createEpisodePost, applyFlair, managePins } from "./postManager.js";
+import { fetchLatestYouTubeEpisode, fetchYouTubeVideoById, isNewEpisode } from "./episodeChecker.js";
+import { generateEpisodePost } from "./llmClient.js";
+import { createEpisodePost, updateEpisodePost, applyBotFlair, applyFlair, managePins } from "./postManager.js";
 
 Devvit.configure({
   redditAPI: true,
@@ -27,7 +27,7 @@ Devvit.addSettings([
     label: 'Google API Key (YouTube Data API + Gemini)',
     helpText: 'Free from Google Cloud Console. Enable YouTube Data API v3 and Generative Language API.',
     isSecret: true,
-    scope: SettingScope.Installation,
+    scope: SettingScope.App,
   },
 
   // --- YouTube Source ---
@@ -52,11 +52,54 @@ Devvit.addSettings([
     type: 'paragraph',
     name: 'systemPrompt',
     label: 'System Prompt',
-    helpText: 'Instructions for Gemini. First line of output is used as the post title. See SystemPrompt.example.md for a sample.',
+    helpText: 'Instructions for Gemini. First line of output is used as the post title. The user message will include: Title, Published date, Link, and Description. See SystemPrompt.example.md for a sample.',
     scope: SettingScope.Installation,
   },
 
   // --- Reddit Post Options ---
+  // --- Bot Identity ---
+  {
+    type: 'string',
+    name: 'botFlairEmoji',
+    label: 'Bot Flair Emoji (optional)',
+    helpText: 'Emoji shown in the bot\'s author flair on this subreddit, e.g. 🎙️',
+    defaultValue: '',
+    scope: SettingScope.Installation,
+  },
+  {
+    type: 'string',
+    name: 'botFlairText',
+    label: 'Bot Flair Text (optional)',
+    helpText: 'Display name shown in the bot\'s author flair on this subreddit, e.g. "Podcast Bot". Combined with the emoji if both are set.',
+    defaultValue: '',
+    scope: SettingScope.Installation,
+  },
+
+  // --- Reddit Post Options ---
+  {
+    type: 'string',
+    name: 'videoLinkLabel',
+    label: 'Video Link Label (optional)',
+    helpText: 'If set, a link to the YouTube video is inserted between the generated body and Append Text. The label becomes the link text, e.g. "Watch on YouTube" → [Watch on YouTube](url). Leave blank to omit.',
+    defaultValue: '',
+    scope: SettingScope.Installation,
+  },
+  {
+    type: 'paragraph',
+    name: 'prependText',
+    label: 'Prepend Text (optional)',
+    helpText: 'Text added to the top of every generated post body. Useful for recurring links or disclaimers.',
+    defaultValue: '',
+    scope: SettingScope.Installation,
+  },
+  {
+    type: 'paragraph',
+    name: 'appendText',
+    label: 'Append Text (optional)',
+    helpText: 'Text added to the bottom of every generated post body. Useful for footers or recurring links.',
+    defaultValue: '',
+    scope: SettingScope.Installation,
+  },
   {
     type: 'string',
     name: 'flairName',
@@ -67,129 +110,6 @@ Devvit.addSettings([
   },
 ]);
 
-// ---------------------------------------------------------------------------
-// Mop (comment moderation tool) — unchanged
-// ---------------------------------------------------------------------------
-
-const nukeFields: FormField[] = [
-  {
-    name: "remove",
-    label: "Remove comments",
-    type: "boolean",
-    defaultValue: true,
-  },
-  {
-    name: "lock",
-    label: "Lock comments",
-    type: "boolean",
-    defaultValue: false,
-  },
-  {
-    name: "skipDistinguished",
-    label: "Skip distinguished comments",
-    type: "boolean",
-    defaultValue: false,
-  },
-] as const;
-
-const nukeForm = Devvit.createForm(
-  () => {
-    return {
-      fields: nukeFields,
-      title: "Mop Comments",
-      acceptLabel: "Mop",
-      cancelLabel: "Cancel",
-    };
-  },
-  async ({ values }, context) => {
-    if (!values.lock && !values.remove) {
-      context.ui.showToast("You must select either lock or remove.");
-      return;
-    }
-
-    if (context.commentId) {
-      const result = await handleNuke(
-        {
-          remove: values.remove,
-          lock: values.lock,
-          skipDistinguished: values.skipDistinguished,
-          commentId: context.commentId,
-          subredditId: context.subredditId,
-        },
-        context
-      );
-      console.log(
-        `Mop result - ${result.success ? "success" : "fail"} - ${result.message
-        }`
-      );
-      context.ui.showToast(
-        `${result.success ? "Success" : "Failed"} : ${result.message}`
-      );
-    } else {
-      context.ui.showToast(`Mop failed! Please try again later.`);
-    }
-  }
-);
-
-Devvit.addMenuItem({
-  label: "Mop comments",
-  description:
-    "Remove this comment and all child comments. This might take a few seconds to run.",
-  location: "comment",
-  forUserType: "moderator",
-  onPress: (_, context) => {
-    context.ui.showForm(nukeForm);
-  },
-});
-
-const nukePostForm = Devvit.createForm(
-  () => {
-    return {
-      fields: nukeFields,
-      title: "Mop Post Comments",
-      acceptLabel: "Mop",
-      cancelLabel: "Cancel",
-    };
-  },
-  async ({ values }, context) => {
-    if (!values.lock && !values.remove) {
-      context.ui.showToast("You must select either lock or remove.");
-      return;
-    }
-
-    if (!context.postId) {
-      throw new Error("No post ID");
-    }
-
-    const result = await handleNukePost(
-      {
-        remove: values.remove,
-        lock: values.lock,
-        skipDistinguished: values.skipDistinguished,
-        postId: context.postId,
-        subredditId: context.subredditId,
-      },
-      context
-    );
-    console.log(
-      `Mop result - ${result.success ? "success" : "fail"} - ${result.message}`
-    );
-    context.ui.showToast(
-      `${result.success ? "Success" : "Failed"} : ${result.message}`
-    );
-  }
-);
-
-Devvit.addMenuItem({
-  label: "Mop post comments",
-  description:
-    "Remove all comments of this post. This might take a few seconds to run.",
-  location: "post",
-  forUserType: "moderator",
-  onPress: (_, context) => {
-    context.ui.showForm(nukePostForm);
-  },
-});
 
 // ---------------------------------------------------------------------------
 // Video checker — scheduler job
@@ -206,6 +126,11 @@ Devvit.addSchedulerJob({
       const playlistId = await settings.get<string>('youtubePlaylistId');
       const geminiModel = (await settings.get<string>('geminiModel')) || 'gemini-2.0-flash';
       const systemPrompt = await settings.get<string>('systemPrompt');
+      const botFlairEmoji = (await settings.get<string>('botFlairEmoji')) || '';
+      const botFlairText = (await settings.get<string>('botFlairText')) || '';
+      const videoLinkLabel = (await settings.get<string>('videoLinkLabel')) || '';
+      const prependText = (await settings.get<string>('prependText')) || '';
+      const appendText = (await settings.get<string>('appendText')) || '';
       const flairName = (await settings.get<string>('flairName')) || '';
 
       // 2. Validate required settings
@@ -242,17 +167,21 @@ Devvit.addSchedulerJob({
 
       // 5. Generate post content via Gemini
       console.log('[bot] Calling Gemini API...');
-      const { title, body } = await generateEpisodePost(googleApiKey, episode, systemPrompt, geminiModel);
+      const { title, body: rawBody } = await generateEpisodePost(googleApiKey, episode, systemPrompt, geminiModel);
       console.log(`[bot] Generated title: "${title}"`);
+
+      const videoLink = videoLinkLabel && episode.link ? `[${videoLinkLabel}](${episode.link})` : '';
+      const body = [prependText, rawBody, videoLink, appendText].filter(Boolean).join('\n\n');
 
       // 6. Submit the Reddit post
       const post = await createEpisodePost(reddit, subredditName, title, body);
       console.log(`[bot] Created post ${post.id}`);
 
-      // 7. Apply flair (if configured)
+      // 7. Apply post flair and bot author flair (if configured)
       if (flairName) {
         await applyFlair(reddit, subredditName, post.id, flairName);
       }
+      await applyBotFlair(reddit, subredditName, botFlairEmoji, botFlairText);
 
       // 8. Pin new post & unpin the previous one
       await managePins(reddit, redis, post.id);
@@ -263,7 +192,7 @@ Devvit.addSchedulerJob({
 
       console.log(`[bot] Post complete: "${title}"`);
     } catch (err) {
-      console.error('[bot] Video checker failed:', err);
+      console.error(`[bot] Video checker failed: ${err}`);
     }
   },
 });
@@ -294,7 +223,7 @@ Devvit.addTrigger({
       await context.redis.set('episode_checker_job_id', jobId);
       console.log(`[bot] Scheduled video checker — job ID: ${jobId}`);
     } catch (err) {
-      console.error('[bot] Failed to schedule video checker:', err);
+      console.error(`[bot] Failed to schedule video checker: ${err}`);
     }
   },
 });
@@ -317,8 +246,82 @@ Devvit.addMenuItem({
       });
       context.ui.showToast('Video check triggered! Check logs for results.');
     } catch (err) {
-      console.error('[bot] Manual trigger failed:', err);
+      console.error(`[bot] Manual trigger failed: ${err}`);
       context.ui.showToast('Failed to trigger video check. See logs.');
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Regenerate latest post (re-run Gemini for the already-posted video)
+// ---------------------------------------------------------------------------
+
+Devvit.addSchedulerJob({
+  name: 'regenerate_latest_post',
+  onRun: async (_event, context) => {
+    const { redis, reddit, settings } = context;
+
+    try {
+      const postId = await redis.get('last_episode_post_id');
+      const videoId = await redis.get('last_episode_guid');
+
+      if (!postId || !videoId) {
+        console.error('[bot] No previous post found to regenerate.');
+        return;
+      }
+
+      const googleApiKey = await settings.get<string>('googleApiKey');
+      const geminiModel = (await settings.get<string>('geminiModel')) || 'gemini-2.0-flash';
+      const systemPrompt = await settings.get<string>('systemPrompt');
+      const botFlairEmoji = (await settings.get<string>('botFlairEmoji')) || '';
+      const botFlairText = (await settings.get<string>('botFlairText')) || '';
+      const videoLinkLabel = (await settings.get<string>('videoLinkLabel')) || '';
+      const prependText = (await settings.get<string>('prependText')) || '';
+      const appendText = (await settings.get<string>('appendText')) || '';
+
+      if (!googleApiKey || !systemPrompt) {
+        console.error('[bot] Missing required settings (googleApiKey, systemPrompt).');
+        return;
+      }
+
+      console.log(`[bot] Fetching video ${videoId} for regeneration...`);
+      const episode = await fetchYouTubeVideoById(googleApiKey, videoId);
+      if (!episode) {
+        console.error(`[bot] Video ${videoId} not found on YouTube.`);
+        return;
+      }
+
+      console.log(`[bot] Regenerating post for "${episode.title}"...`);
+      const { body: rawBody } = await generateEpisodePost(googleApiKey, episode, systemPrompt, geminiModel);
+
+      const videoLink = videoLinkLabel && episode.link ? `[${videoLinkLabel}](${episode.link})` : '';
+      const body = [prependText, rawBody, videoLink, appendText].filter(Boolean).join('\n\n');
+
+      await updateEpisodePost(reddit, postId, body);
+      await applyBotFlair(reddit, context.subredditName!, botFlairEmoji, botFlairText);
+      console.log(`[bot] Regenerated post ${postId}`);
+    } catch (err) {
+      console.error(`[bot] Regeneration failed: ${err}`);
+    }
+  },
+});
+
+Devvit.addMenuItem({
+  label: 'Regenerate latest post',
+  description: 'Re-run Gemini for the last posted video and update the post body.',
+  location: 'subreddit',
+  forUserType: 'moderator',
+  onPress: async (_event, context) => {
+    context.ui.showToast('Regenerating post...');
+    try {
+      await context.scheduler.runJob({
+        name: 'regenerate_latest_post',
+        runAt: new Date(),
+      });
+      context.ui.showToast('Regeneration triggered! Check logs for results.');
+    } catch (err) {
+      console.error(`[bot] Regenerate trigger failed: ${err}`);
+      context.ui.showToast('Failed to trigger regeneration. See logs.');
     }
   },
 });

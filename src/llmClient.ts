@@ -1,11 +1,13 @@
 import { type EpisodeData, type GeneratedPost } from './types.js';
 
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+// Uses the OpenAI-compatible endpoint to avoid colon-in-path URLs like
+// `:generateContent`, which Devvit's HTTP proxy misinterprets as gRPC routing.
+const GEMINI_OPENAI_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 
 /**
  * Call the Gemini API to generate a post from video metadata.
- * The system prompt and model are supplied by the caller (from app settings).
- * Returns a parsed { title, body } object ready for Reddit submission.
+ * Uses the OpenAI-compatible endpoint so the URL has no colon-prefixed
+ * method segment, which is required for Devvit's HTTP proxy.
  */
 export async function generateEpisodePost(
   apiKey: string,
@@ -14,40 +16,52 @@ export async function generateEpisodePost(
   geminiModel: string
 ): Promise<GeneratedPost> {
   const userMessage = buildUserMessage(episode);
-  const url = `${GEMINI_API_BASE}/${encodeURIComponent(geminiModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  const response = await fetch(url, {
+  console.log(`[llmClient] POST ${GEMINI_OPENAI_URL} (model: ${geminiModel})`);
+  console.log(`[llmClient] System prompt: ${systemPrompt.length} chars, user message: ${userMessage.length} chars`);
+
+  const response = await fetch(GEMINI_OPENAI_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
     body: JSON.stringify({
-      system_instruction: {
-        parts: [{ text: systemPrompt }],
-      },
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: userMessage }],
-        },
+      model: geminiModel,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
       ],
-      generationConfig: {
-        maxOutputTokens: 1024,
-      },
+      max_tokens: 4096,
     }),
   });
 
+  console.log(`[llmClient] Response status: ${response.status}`);
+
   if (!response.ok) {
     const errText = await response.text().catch(() => '(unreadable)');
+    console.error(`[llmClient] Error response: ${errText.slice(0, 500)}`);
     throw new Error(`Gemini API error ${response.status}: ${errText}`);
   }
 
   const data = (await response.json()) as {
-    candidates?: Array<{
-      content: { parts: Array<{ text: string }> };
+    choices?: Array<{
+      message: { content: string };
+      finish_reason: string;
     }>;
   };
 
-  const fullText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  const choice = data.choices?.[0];
+  const fullText = choice?.message?.content ?? '';
+  const finishReason = choice?.finish_reason ?? 'unknown';
+
+  console.log(`[llmClient] finish_reason: ${finishReason}, response length: ${fullText.length} chars`);
+  if (finishReason === 'length') {
+    console.warn('[llmClient] Response was cut off by max_tokens limit — consider raising it or shortening the system prompt.');
+  }
+
   if (!fullText) {
+    console.error(`[llmClient] Empty response. Raw: ${JSON.stringify(data).slice(0, 500)}`);
     throw new Error('Gemini returned an empty response');
   }
 

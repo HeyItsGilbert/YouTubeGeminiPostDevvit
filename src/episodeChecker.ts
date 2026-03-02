@@ -25,7 +25,7 @@ export async function fetchLatestYouTubeEpisode(
 ): Promise<EpisodeData | null> {
   const url =
     `${YT_API_BASE}/playlistItems` +
-    `?part=snippet&maxResults=1&playlistId=${encodeURIComponent(playlistId)}&key=${encodeURIComponent(apiKey)}`;
+    `?part=snippet&maxResults=50&playlistId=${encodeURIComponent(playlistId)}&key=${encodeURIComponent(apiKey)}`;
 
   const response = await fetch(url);
   if (!response.ok) {
@@ -34,12 +34,59 @@ export async function fetchLatestYouTubeEpisode(
   }
 
   const data = (await response.json()) as YouTubePlaylistResponse;
-  const item = data.items?.[0];
-  if (!item) return null;
+  if (!data.items?.length) return null;
+
+  // Sort descending by publish date so the newest episode is first
+  const sorted = [...data.items].sort(
+    (a, b) => new Date(b.snippet.publishedAt).getTime() - new Date(a.snippet.publishedAt).getTime()
+  );
+  const item = sorted[0];
 
   const { snippet } = item;
   const videoId = snippet.resourceId.videoId;
 
+  return {
+    guid: videoId,
+    title: snippet.title,
+    description: snippet.description ?? '',
+    pubDate: snippet.publishedAt,
+    link: `https://www.youtube.com/watch?v=${videoId}`,
+    episodeNumber: undefined,
+  };
+}
+
+/**
+ * Fetch a specific YouTube video by its ID.
+ * Returns null if the video is not found.
+ */
+export async function fetchYouTubeVideoById(
+  apiKey: string,
+  videoId: string
+): Promise<EpisodeData | null> {
+  const url =
+    `${YT_API_BASE}/videos` +
+    `?part=snippet&id=${encodeURIComponent(videoId)}&key=${encodeURIComponent(apiKey)}`;
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '(unreadable)');
+    throw new Error(`YouTube API error ${response.status}: ${errText}`);
+  }
+
+  const data = (await response.json()) as {
+    items?: Array<{
+      snippet: {
+        publishedAt: string;
+        title: string;
+        description: string;
+      };
+    }>;
+  };
+
+  const item = data.items?.[0];
+  if (!item) return null;
+
+  const { snippet } = item;
   return {
     guid: videoId,
     title: snippet.title,
