@@ -2,7 +2,7 @@
 
 A Devvit app that monitors a YouTube playlist for new videos, generates a Reddit post using the Google Gemini API, and manages pin rotation on the subreddit. Both APIs are free-tier, making this a zero-cost automation for any community.
 
-Demo: https://www.youtube.com/watch?v=Xdm_pJxI6Yo
+Demo: <https://www.youtube.com/watch?v=Xdm_pJxI6Yo>
 
 ## What it does
 
@@ -11,8 +11,9 @@ Demo: https://www.youtube.com/watch?v=Xdm_pJxI6Yo
 - **Calls Gemini** with video metadata and a mod-supplied system prompt to generate a discussion post
 - **Submits the post** to the subreddit with optional flair
 - **Rotates the pin** -- stickies the new post and unstickies the previous one
+- **Notifies the triggering mod by PM** if a manually triggered action fails
 
-A moderator menu item ("Check for new videos") lets mods trigger an immediate check at any time.
+Moderator menu items let mods trigger an immediate check ("Check for new videos") or regenerate the latest post ("Regenerate latest post") at any time. If either of these manual actions fails, the mod who triggered it receives a Reddit private message with the error details. Scheduled (cron) runs are self-healing — because `last_episode_guid` is only persisted on success, the next 30-minute tick automatically retries any failed run without mod intervention.
 
 ## API Key
 
@@ -26,17 +27,17 @@ The key is stored in the subreddit's Redis store. To get a key, visit the visit 
 
 All settings are configured per subreddit in the app's installation settings.
 
-| Name | Type | Secret | Default | Description |
-|------|------|--------|---------|-------------|
-| `youtubePlaylistId` | string | No | -- | YouTube playlist ID to monitor |
-| `geminiModel` | string | No | `gemini-2.0-flash` | Gemini model for post generation |
-| `systemPrompt` | paragraph | No | -- | Full system prompt for Gemini (controls voice, structure, rules). The user message will include: **Title**, **Published**, **Link**, and **Description**. |
-| `botFlairEmoji` | string | No | *(empty)* | Emoji for the bot's author flair on this subreddit, e.g. `🎙️` |
-| `botFlairText` | string | No | *(empty)* | Text for the bot's author flair, e.g. `Podcast Bot`. Combined with emoji if both are set. |
-| `videoLinkLabel` | string | No | *(empty)* | If set, inserts a markdown link to the video between the body and append text, e.g. `Watch on YouTube` → `[Watch on YouTube](url)` |
-| `prependText` | paragraph | No | *(empty)* | Text prepended to every generated post body (e.g. recurring links, disclaimers) |
-| `appendText` | paragraph | No | *(empty)* | Text appended to every generated post body (e.g. footers, recurring links) |
-| `flairName` | string | No | *(empty)* | Post flair to apply (exact name match, optional) |
+| Name                | Type      | Secret | Default            | Description                                                                                                                                               |
+|---------------------|-----------|--------|--------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `youtubePlaylistId` | string    | No     | --                 | YouTube playlist ID to monitor                                                                                                                            |
+| `geminiModel`       | string    | No     | `gemini-2.0-flash` | Gemini model for post generation                                                                                                                          |
+| `systemPrompt`      | paragraph | No     | --                 | Full system prompt for Gemini (controls voice, structure, rules). The user message will include: **Title**, **Published**, **Link**, and **Description**. |
+| `botFlairEmoji`     | string    | No     | *(empty)*          | Emoji for the bot's author flair on this subreddit, e.g. `🎙️`                                                                                            |
+| `botFlairText`      | string    | No     | *(empty)*          | Text for the bot's author flair, e.g. `Podcast Bot`. Combined with emoji if both are set.                                                                 |
+| `videoLinkLabel`    | string    | No     | *(empty)*          | If set, inserts a markdown link to the video between the body and append text, e.g. `Watch on YouTube` → `[Watch on YouTube](url)`                        |
+| `prependText`       | paragraph | No     | *(empty)*          | Text prepended to every generated post body (e.g. recurring links, disclaimers)                                                                           |
+| `appendText`        | paragraph | No     | *(empty)*          | Text appended to every generated post body (e.g. footers, recurring links)                                                                                |
+| `flairName`         | string    | No     | *(empty)*          | Post flair to apply (exact name match, optional)                                                                                                          |
 
 ## Project structure
 
@@ -93,20 +94,22 @@ Both `youtube.googleapis.com` and `generativelanguage.googleapis.com` are on the
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Playtest -- installs to test subreddit and streams logs |
-| `npm run deploy` | Upload app to the App Directory |
-| `npm run launch` | Publish the app |
-| `npm run type-check` | TypeScript type check |
+| Command              | Description                                             |
+|----------------------|---------------------------------------------------------|
+| `npm run dev`        | Playtest -- installs to test subreddit and streams logs |
+| `npm run deploy`     | Upload app to the App Directory                         |
+| `npm run launch`     | Publish the app                                         |
+| `npm run type-check` | TypeScript type check                                   |
 
 ## Redis keys
 
-| Key | Purpose |
-|-----|---------|
-| `last_episode_guid` | Video ID of last processed video (deduplication) |
-| `last_episode_post_id` | Reddit post ID of currently pinned post |
-| `episode_checker_job_id` | Scheduler job ID (used for clean re-install) |
+| Key                       | Purpose                                                   |
+|---------------------------|-----------------------------------------------------------|
+| `last_episode_guid`       | Video ID of last processed video (deduplication)          |
+| `last_episode_post_id`    | Reddit post ID of currently pinned post                   |
+| `episode_checker_job_id`  | Scheduler job ID (used for clean re-install)              |
+| `check_triggered_by`      | Username of mod who last manually triggered a video check |
+| `regenerate_triggered_by` | Username of mod who last triggered a post regeneration    |
 
 ## Learn more
 

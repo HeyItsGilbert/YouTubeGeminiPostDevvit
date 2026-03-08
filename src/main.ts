@@ -225,6 +225,19 @@ Devvit.addSchedulerJob({
       console.log(`[bot] Post complete: "${title}"`);
     } catch (err) {
       console.error(`[bot] Video checker failed: ${err}`);
+      const triggeredBy = await redis.get('check_triggered_by');
+      if (triggeredBy) {
+        try {
+          await reddit.sendPrivateMessage({
+            to: triggeredBy,
+            subject: 'Video check failed',
+            text: `Hi u/${triggeredBy},\n\nThe video check you triggered on r/${context.subredditName!} failed with the following error:\n\n    ${err}\n\nPlease try again later. If the error persists, check the app logs for more details.`,
+          });
+          console.log(`[bot] Sent error notification PM to u/${triggeredBy}`);
+        } catch (pmErr) {
+          console.error(`[bot] Failed to send error notification PM: ${pmErr}`);
+        }
+      }
     }
   },
 });
@@ -272,6 +285,10 @@ Devvit.addMenuItem({
   onPress: async (_event, context) => {
     context.ui.showToast('Checking for new videos...');
     try {
+      const currentUser = await context.reddit.getCurrentUser();
+      if (currentUser) {
+        await context.redis.set('check_triggered_by', currentUser.username);
+      }
       await context.scheduler.runJob({
         name: 'check_new_episodes',
         runAt: new Date(),
@@ -334,6 +351,19 @@ Devvit.addSchedulerJob({
       console.log(`[bot] Regenerated post ${postId}`);
     } catch (err) {
       console.error(`[bot] Regeneration failed: ${err}`);
+      const triggeredBy = await redis.get('regenerate_triggered_by');
+      if (triggeredBy) {
+        try {
+          await reddit.sendPrivateMessage({
+            to: triggeredBy,
+            subject: 'Post regeneration failed',
+            text: `Hi u/${triggeredBy},\n\nThe post regeneration you triggered on r/${context.subredditName} failed with the following error:\n\n    ${err}\n\nPlease try again later. If the error persists, check the app logs for more details.`,
+          });
+          console.log(`[bot] Sent error notification PM to u/${triggeredBy}`);
+        } catch (pmErr) {
+          console.error(`[bot] Failed to send error notification PM: ${pmErr}`);
+        }
+      }
     }
   },
 });
@@ -346,6 +376,10 @@ Devvit.addMenuItem({
   onPress: async (_event, context) => {
     context.ui.showToast('Regenerating post...');
     try {
+      const currentUser = await context.reddit.getCurrentUser();
+      if (currentUser) {
+        await context.redis.set('regenerate_triggered_by', currentUser.username);
+      }
       await context.scheduler.runJob({
         name: 'regenerate_latest_post',
         runAt: new Date(),
