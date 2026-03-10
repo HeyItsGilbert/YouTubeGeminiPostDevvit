@@ -16,13 +16,13 @@ interface YouTubePlaylistResponse {
 }
 
 /**
- * Fetch the latest video from a YouTube playlist.
- * Returns null if the playlist is empty.
+ * Fetch up to 50 videos from a YouTube playlist, sorted newest-first.
+ * Returns an empty array if the playlist has no videos.
  */
-export async function fetchLatestYouTubeEpisode(
+export async function fetchPlaylistVideos(
   apiKey: string,
   playlistId: string
-): Promise<EpisodeData | null> {
+): Promise<EpisodeData[]> {
   const url =
     `${YT_API_BASE}/playlistItems` +
     `?part=snippet&maxResults=50&playlistId=${encodeURIComponent(playlistId)}&key=${encodeURIComponent(apiKey)}`;
@@ -34,25 +34,26 @@ export async function fetchLatestYouTubeEpisode(
   }
 
   const data = (await response.json()) as YouTubePlaylistResponse;
-  if (!data.items?.length) return null;
+  if (!data.items?.length) return [];
 
-  // Sort descending by publish date so the newest episode is first
-  const sorted = [...data.items].sort(
-    (a, b) => new Date(b.snippet.publishedAt).getTime() - new Date(a.snippet.publishedAt).getTime()
-  );
-  const item = sorted[0];
-
-  const { snippet } = item;
-  const videoId = snippet.resourceId.videoId;
-
-  return {
-    guid: videoId,
-    title: snippet.title,
-    description: snippet.description ?? '',
-    pubDate: snippet.publishedAt,
-    link: `https://www.youtube.com/watch?v=${videoId}`,
-    episodeNumber: undefined,
-  };
+  return [...data.items]
+    .sort(
+      (a, b) =>
+        new Date(b.snippet.publishedAt).getTime() -
+        new Date(a.snippet.publishedAt).getTime()
+    )
+    .map((item) => {
+      const { snippet } = item;
+      const videoId = snippet.resourceId.videoId;
+      return {
+        guid: videoId,
+        title: snippet.title,
+        description: snippet.description ?? '',
+        pubDate: snippet.publishedAt,
+        link: `https://www.youtube.com/watch?v=${videoId}`,
+        episodeNumber: undefined,
+      };
+    });
 }
 
 /**
@@ -98,13 +99,15 @@ export async function fetchYouTubeVideoById(
 }
 
 /**
- * Check whether the given episode is newer than the last one we processed.
- * Uses Redis key `last_episode_guid` for comparison.
+ * Returns true if the video title matches any of the exclusion keywords.
+ * Keywords are comma-separated, matched case-insensitively as substrings.
  */
-export async function isNewEpisode(
-  redis: { get: (key: string) => Promise<string | undefined | null> },
-  episode: EpisodeData
-): Promise<boolean> {
-  const lastGuid = await redis.get('last_episode_guid');
-  return lastGuid !== episode.guid;
+export function matchesExclusionFilter(title: string, keywords: string): boolean {
+  if (!keywords.trim()) return false;
+  const lower = title.toLowerCase();
+  return keywords
+    .split(',')
+    .map((k) => k.trim().toLowerCase())
+    .filter(Boolean)
+    .some((keyword) => lower.includes(keyword));
 }
