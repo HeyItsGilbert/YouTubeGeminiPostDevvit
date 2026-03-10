@@ -1,1 +1,1 @@
-{"root":["./src/episodechecker.ts","./src/llmclient.ts","./src/main.ts","./src/postmanager.ts","./src/types.ts"],"errors":true,"version":"5.8.3"}
+{"root":["./src/episodechecker.ts","./src/llmclient.ts","./src/main.ts","./src/postmanager.ts","./src/types.ts","./src/videoregistry.ts"],"errors":true,"version":"5.8.3"}
