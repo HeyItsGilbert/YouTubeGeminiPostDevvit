@@ -1,8 +1,9 @@
 import { Devvit, SettingScope } from "@devvit/public-api";
 
-import { fetchLatestYouTubeEpisode, fetchYouTubeVideoById, isNewEpisode } from "./episodeChecker.js";
+import { fetchPlaylistVideos, fetchYouTubeVideoById, matchesExclusionFilter } from "./episodeChecker.js";
 import { generateEpisodePost } from "./llmClient.js";
 import { createEpisodePost, updateEpisodePost, applyBotFlair, applyFlair, managePins } from "./postManager.js";
+import { getVideoRecord, setVideoRecord } from "./videoRegistry.js";
 
 Devvit.configure({
   redditAPI: true,
@@ -26,6 +27,14 @@ Devvit.addSettings([
     name: 'youtubePlaylistId',
     label: 'YouTube Playlist ID',
     helpText: 'The playlist to monitor for new videos (e.g., PL0WMaa8s_mXGb3089AMtiyvordHKAZKi9).',
+    scope: SettingScope.Installation,
+  },
+  {
+    type: 'string',
+    name: 'excludeTitleKeywords',
+    label: 'Exclude Title Keywords (optional)',
+    helpText: 'Comma-separated list of keywords. Videos whose titles contain any of these words are permanently skipped (e.g. "trailer, short, bonus").',
+    defaultValue: '',
     scope: SettingScope.Installation,
   },
 
@@ -156,6 +165,7 @@ Devvit.addSchedulerJob({
       // 1. Read all settings
       const googleApiKey = await redis.get(REDIS_KEY_GOOGLE_API_KEY);
       const playlistId = await settings.get<string>('youtubePlaylistId');
+      const excludeKeywords = (await settings.get<string>('excludeTitleKeywords')) || '';
       const geminiModel = (await settings.get<string>('geminiModel')) || 'gemini-2.0-flash';
       const systemPrompt = await settings.get<string>('systemPrompt');
       const botFlairEmoji = (await settings.get<string>('botFlairEmoji')) || '';
@@ -179,25 +189,66 @@ Devvit.addSchedulerJob({
         return;
       }
 
-      // 3. Fetch the latest video from the YouTube playlist
+      // 3. Fetch playlist videos (newest first, up to 50)
       const subredditName = context.subredditName!;
       console.log(`[bot] Checking playlist ${playlistId} for ${subredditName}...`);
-      const episode = await fetchLatestYouTubeEpisode(googleApiKey, playlistId);
+      const videos = await fetchPlaylistVideos(googleApiKey, playlistId);
 
-      if (!episode) {
+      if (!videos.length) {
         console.log('[bot] No videos found in YouTube playlist.');
         return;
       }
 
-      // 4. Skip if already processed
-      if (!(await isNewEpisode(redis, episode))) {
-        console.log(`[bot] No new video. Latest: "${episode.title}"`);
+      // 4. Walk videos newest-first; find the first one we haven't handled yet
+      let episodeToPost = null;
+      const toSkip: typeof videos = [];
+
+      for (const video of videos) {
+        const record = await getVideoRecord(redis, video.guid);
+        if (record) {
+          // Already handled (posted, excluded, or skipped) — stop looking
+          break;
+        }
+
+        if (matchesExclusionFilter(video.title, excludeKeywords)) {
+          console.log(`[bot] Excluding video "${video.title}" (matches exclusion filter)`);
+          await setVideoRecord(redis, video.guid, {
+            title: video.title,
+            status: 'excluded',
+            processedAt: new Date().toISOString(),
+          });
+          continue;
+        }
+
+        // First unregistered, non-excluded video — this is the one to post
+        episodeToPost = video;
+        // Everything after it in the array is older and should be marked skipped
+        const idx = videos.indexOf(video);
+        toSkip.push(...videos.slice(idx + 1));
+        break;
+      }
+
+      // 5. Mark older unregistered videos as skipped so they're never posted
+      for (const video of toSkip) {
+        const existing = await getVideoRecord(redis, video.guid);
+        if (!existing) {
+          await setVideoRecord(redis, video.guid, {
+            title: video.title,
+            status: 'skipped',
+            processedAt: new Date().toISOString(),
+          });
+        }
+      }
+
+      if (!episodeToPost) {
+        console.log(`[bot] No new video to post.`);
         return;
       }
 
+      const episode = episodeToPost;
       console.log(`[bot] New video detected: "${episode.title}"`);
 
-      // 5. Generate post content via Gemini
+      // 6. Generate post content via Gemini
       console.log('[bot] Calling Gemini API...');
       const { title, body: rawBody } = await generateEpisodePost(googleApiKey, episode, systemPrompt, geminiModel);
       console.log(`[bot] Generated title: "${title}"`);
@@ -205,20 +256,26 @@ Devvit.addSchedulerJob({
       const videoLink = videoLinkLabel && episode.link ? `[${videoLinkLabel}](${episode.link})` : '';
       const body = [prependText, rawBody, videoLink, appendText].filter(Boolean).join('\n\n');
 
-      // 6. Submit the Reddit post
+      // 7. Submit the Reddit post
       const post = await createEpisodePost(reddit, subredditName, title, body);
       console.log(`[bot] Created post ${post.id}`);
 
-      // 7. Apply post flair and bot author flair (if configured)
+      // 8. Apply post flair and bot author flair (if configured)
       if (flairName) {
         await applyFlair(reddit, subredditName, post.id, flairName);
       }
       await applyBotFlair(reddit, subredditName, botFlairEmoji, botFlairText);
 
-      // 8. Pin new post & unpin the previous one
+      // 9. Pin new post & unpin the previous one
       await managePins(reddit, redis, post.id);
 
-      // 9. Persist state so we don't reprocess this video
+      // 10. Persist to registry and keep legacy keys for backwards compatibility
+      await setVideoRecord(redis, episode.guid, {
+        title: episode.title,
+        status: 'posted',
+        postId: post.id,
+        processedAt: new Date().toISOString(),
+      });
       await redis.set('last_episode_guid', episode.guid);
       await redis.set('last_episode_post_id', post.id);
 

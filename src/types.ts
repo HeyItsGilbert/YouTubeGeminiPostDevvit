@@ -23,3 +23,15 @@ export interface GeneratedPost {
   /** Markdown body for the Reddit post */
   body: string;
 }
+
+/** Registry entry stored in Redis hash `video_registry` keyed by video ID */
+export interface VideoRecord {
+  /** Video title at the time of processing */
+  title: string;
+  /** Outcome of processing this video */
+  status: 'posted' | 'excluded' | 'skipped';
+  /** Reddit post ID — only set when status is 'posted' */
+  postId?: string;
+  /** ISO 8601 timestamp when the record was written */
+  processedAt: string;
+}
