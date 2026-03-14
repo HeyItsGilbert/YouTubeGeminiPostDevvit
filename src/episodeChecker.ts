@@ -16,16 +16,37 @@ interface YouTubePlaylistResponse {
 }
 
 /**
+ * If the caller supplies a YouTube channel ID (starts with "UC"),
+ * convert it to the corresponding Uploads playlist ID ("UU...").
+ * The Uploads playlist is always sorted newest-first by the API,
+ * which avoids the need for client-side sorting and extra pages.
+ */
+function resolvePlaylistId(playlistId: string): string {
+  if (playlistId.startsWith('UC')) {
+    return 'UU' + playlistId.slice(2);
+  }
+  return playlistId;
+}
+
+/**
  * Fetch up to 50 videos from a YouTube playlist, sorted newest-first.
+ * If a channel ID (UC...) is supplied it is silently converted to the
+ * corresponding Uploads playlist (UU...) which the API returns in
+ * chronological-descending order, reducing the need for paging.
  * Returns an empty array if the playlist has no videos.
  */
 export async function fetchPlaylistVideos(
   apiKey: string,
   playlistId: string
 ): Promise<EpisodeData[]> {
+  const resolvedId = resolvePlaylistId(playlistId);
+  if (resolvedId !== playlistId) {
+    console.log(`[episodeChecker] Converted channel ID ${playlistId} → uploads playlist ${resolvedId}`);
+  }
+
   const url =
     `${YT_API_BASE}/playlistItems` +
-    `?part=snippet&maxResults=50&playlistId=${encodeURIComponent(playlistId)}&key=${encodeURIComponent(apiKey)}`;
+    `?part=snippet&maxResults=50&playlistId=${encodeURIComponent(resolvedId)}&key=${encodeURIComponent(apiKey)}`;
 
   const response = await fetch(url);
   if (!response.ok) {

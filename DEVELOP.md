@@ -53,20 +53,20 @@ Both `youtube.googleapis.com` and `generativelanguage.googleapis.com` are on the
 
 # Commands
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Playtest -- installs to test subreddit and streams logs |
-| `npm run deploy` | Upload app to the App Directory |
-| `npm run launch` | Publish the app |
-| `npm run type-check` | TypeScript type check |
+| Command              | Description                                             |
+|----------------------|---------------------------------------------------------|
+| `npm run dev`        | Playtest -- installs to test subreddit and streams logs |
+| `npm run deploy`     | Upload app to the App Directory                         |
+| `npm run launch`     | Publish the app                                         |
+| `npm run type-check` | TypeScript type check                                   |
 
 # Redis keys
 
-| Key | Purpose |
-|-----|---------|
-| `last_episode_guid` | Video ID of last processed video (deduplication) |
-| `last_episode_post_id` | Reddit post ID of currently pinned post |
-| `episode_checker_job_id` | Scheduler job ID (used for clean re-install) |
+| Key                      | Purpose                                          |
+|--------------------------|--------------------------------------------------|
+| `last_episode_guid`      | Video ID of last processed video (deduplication) |
+| `last_episode_post_id`   | Reddit post ID of currently pinned post          |
+| `episode_checker_job_id` | Scheduler job ID (used for clean re-install)     |
 
 # Learn more
 

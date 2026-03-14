@@ -5,7 +5,7 @@ export const REGISTRY_KEY = 'video_registry';
 
 type RedisClient = {
   hGet: (key: string, field: string) => Promise<string | undefined | null>;
-  hSet: (key: string, value: Record<string, string>) => Promise<void>;
+  hSet: (key: string, value: Record<string, string>) => Promise<number>;
 };
 
 /**

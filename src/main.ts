@@ -26,7 +26,7 @@ Devvit.addSettings([
     type: 'string',
     name: 'youtubePlaylistId',
     label: 'YouTube Playlist ID',
-    helpText: 'The playlist to monitor for new videos (e.g., PL0WMaa8s_mXGb3089AMtiyvordHKAZKi9).',
+    helpText: 'Playlist to monitor for new videos. You can use a regular playlist ID (e.g. PLabc123) or a channel ID (e.g. UCabc123) — the app will automatically use that channel\'s Uploads playlist, which is always sorted newest-first.',
     scope: SettingScope.Installation,
   },
   {
@@ -199,15 +199,26 @@ Devvit.addSchedulerJob({
         return;
       }
 
-      // 4. Walk videos newest-first; find the first one we haven't handled yet
+      // 4. Walk videos newest-first; find the first unregistered, non-excluded video.
+      //    We scan past already-known videos instead of stopping at them so that
+      //    videos which were private (invisible to the API) when earlier videos
+      //    were posted are still detected once they become public.
+      const forceRepost = (await redis.get('force_repost')) === '1';
+      if (forceRepost) {
+        await redis.del('force_repost');
+        console.log('[bot] force_repost flag set — bypassing registry check for newest video');
+      }
+
       let episodeToPost = null;
-      const toSkip: typeof videos = [];
 
       for (const video of videos) {
-        const record = await getVideoRecord(redis, video.guid);
-        if (record) {
-          // Already handled (posted, excluded, or skipped) — stop looking
-          break;
+        // Skip registry check for the very first (newest) video when force_repost is active
+        if (!forceRepost || episodeToPost !== null) {
+          const record = await getVideoRecord(redis, video.guid);
+          if (record) {
+            console.log(`[bot] Skipping "${video.title}" (${video.guid}) — already ${record.status}`);
+            continue; // Already handled — keep scanning for gaps
+          }
         }
 
         if (matchesExclusionFilter(video.title, excludeKeywords)) {
@@ -220,18 +231,12 @@ Devvit.addSchedulerJob({
           continue;
         }
 
-        // First unregistered, non-excluded video — this is the one to post
-        episodeToPost = video;
-        // Everything after it in the array is older and should be marked skipped
-        const idx = videos.indexOf(video);
-        toSkip.push(...videos.slice(idx + 1));
-        break;
-      }
-
-      // 5. Mark older unregistered videos as skipped so they're never posted
-      for (const video of toSkip) {
-        const existing = await getVideoRecord(redis, video.guid);
-        if (!existing) {
+        if (!episodeToPost) {
+          // Newest unregistered, non-excluded video — this is the one to post
+          episodeToPost = video;
+        } else {
+          // Older unregistered video — mark as skipped so it's never posted
+          console.log(`[bot] Skipping "${video.title}" (${video.guid}) — older than the video to post`);
           await setVideoRecord(redis, video.guid, {
             title: video.title,
             status: 'skipped',
@@ -354,6 +359,35 @@ Devvit.addMenuItem({
     } catch (err) {
       console.error(`[bot] Manual trigger failed: ${err}`);
       context.ui.showToast('Failed to trigger video check. See logs.');
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Force post latest video (testing — bypasses registry check)
+// ---------------------------------------------------------------------------
+
+Devvit.addMenuItem({
+  label: 'Force post latest video (testing)',
+  description: 'Re-post the newest playlist video even if it has already been posted. Sets a one-shot flag then triggers the normal check job.',
+  location: 'subreddit',
+  forUserType: 'moderator',
+  onPress: async (_event, context) => {
+    context.ui.showToast('Forcing post of latest video...');
+    try {
+      await context.redis.set('force_repost', '1');
+      const currentUser = await context.reddit.getCurrentUser();
+      if (currentUser) {
+        await context.redis.set('check_triggered_by', currentUser.username);
+      }
+      await context.scheduler.runJob({
+        name: 'check_new_episodes',
+        runAt: new Date(),
+      });
+      context.ui.showToast('Force post triggered! Check logs for results.');
+    } catch (err) {
+      console.error(`[bot] Force post trigger failed: ${err}`);
+      context.ui.showToast('Failed to trigger force post. See logs.');
     }
   },
 });
