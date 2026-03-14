@@ -1,8 +1,13 @@
 # YouTube + Gemini Post Devvit App
 
-A Devvit app that monitors a YouTube playlist for new videos, generates a Reddit post using the Google Gemini API, and manages pin rotation on the subreddit. Both APIs are free-tier, making this a zero-cost automation for any community.
+A Devvit app that monitors a YouTube playlist for new videos, generates a Reddit
+post using the Google Gemini API, and manages pin rotation on the subreddit.
+Both APIs are free-tier, making this a zero-cost automation for any community.
 
 Demo: <https://www.youtube.com/watch?v=Xdm_pJxI6Yo>
+
+You can use the [YouTube + Gemini Post Companion Site](https://youtubegeminipostdevvit.netlify.app/)
+to validate your API key and test different prompts.
 
 ## What it does
 
@@ -13,7 +18,13 @@ Demo: <https://www.youtube.com/watch?v=Xdm_pJxI6Yo>
 - **Rotates the pin** — pins the new post and unpins the previous one
 - **Notifies the triggering mod by PM** if a manually triggered action fails
 
-Moderator menu items let mods trigger an immediate check ("Check for new videos"), force a re-post of the latest video bypassing deduplication ("Force post latest video (testing)"), or regenerate the body of the latest post ("Regenerate latest post"). If any manual action fails, the triggering mod receives a Reddit PM with the error details. Scheduled (cron) runs are self-healing — state is only persisted on success, so the next 30-minute tick retries automatically.
+Moderator menu items let mods trigger an immediate check ("Check for new
+videos"), force a re-post of the latest video bypassing deduplication ("Force
+post latest video (testing)"), or regenerate the body of the latest post
+("Regenerate latest post"). If any manual action fails, the triggering mod
+receives a Reddit PM with the error details. Scheduled (cron) runs are
+self-healing — state is only persisted on success, so the next 30-minute tick
+retries automatically.
 
 ## API Key
 
@@ -21,7 +32,10 @@ Moderator menu items let mods trigger an immediate check ("Check for new videos"
 2. Open the **Mod Tools** menu and select **Set Google API Key**.
 3. Paste your key into the masked input and click **Save**.
 
-The key is stored in the subreddit's Redis store. To get a key, visit the visit the [AI Studio](https://aistudio.google.com/), create a project and API key. Then go to [Google Cloud Console](https://console.cloud.google.com/), switch to the new project, and enable both the **YouTube Data API v3**.
+The key is stored in the subreddit's Redis store. To get a key, visit the visit
+the [AI Studio](https://aistudio.google.com/), create a project and API key.
+Then go to [Google Cloud Console](https://console.cloud.google.com/), switch to
+the new project, and enable both the **YouTube Data API v3**.
 
 ## Settings
 
@@ -41,4 +55,6 @@ All settings are configured per subreddit in the app's installation settings.
 
 ## Developers
 
-See the [Developer](https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/blob/main/DEVELOP.md) docs on the GitHub.
+See the
+[Developer](https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/blob/main/DEVELOP.md)
+docs on the GitHub.
