@@ -1,6 +1,6 @@
 [build]
 base = "preview-site"
-command = "cd preview-site && npm install && npm run build"
+command = "npm install && npm run build"
 publish = "dist"
 
 [build.environment]
