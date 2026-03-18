@@ -1,6 +1,6 @@
-.env
+**/.env
 node_modules
-src/*.js
+src/**/*.js
 
 # Preview app build artifacts
 preview-site/node_modules/
@@ -8,3 +8,8 @@ preview-site/dist/
 preview-site/.env
 
 .claude/settings.local.json
+preview-site/build/
+preview-site/coverage/
+**/.DS_Store
+*.log
+!.env.example
