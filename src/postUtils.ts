@@ -103,6 +103,33 @@ export function applyPlaceholders(template: string, episode: EpisodeData): strin
 }
 
 // ---------------------------------------------------------------------------
+// Video filtering
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if the video title matches any of the exclusion keywords.
+ * Keywords are comma-separated, matched case-insensitively as substrings.
+ */
+export function matchesExclusionFilter(title: string, keywords: string): boolean {
+  if (!keywords.trim()) return false;
+  const lower = title.toLowerCase();
+  return keywords
+    .split(',')
+    .map((k) => k.trim().toLowerCase())
+    .filter(Boolean)
+    .some((keyword) => lower.includes(keyword));
+}
+
+/**
+ * Returns true if the video appears to be private or deleted.
+ * YouTube returns the exact title "Private video" for videos that are
+ * no longer publicly accessible. These should be silently ignored.
+ */
+export function isPrivateVideo(video: EpisodeData): boolean {
+  return video.title === 'Private video';
+}
+
+// ---------------------------------------------------------------------------
 // Post body assembly
 // ---------------------------------------------------------------------------
 

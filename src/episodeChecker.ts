@@ -1,5 +1,5 @@
 import { type EpisodeData } from './types.js';
-import { resolvePlaylistId } from './postUtils.js';
+import { resolvePlaylistId, isPrivateVideo } from './postUtils.js';
 
 const YT_API_BASE = 'https://youtube.googleapis.com/youtube/v3';
 
@@ -62,6 +62,13 @@ export async function fetchPlaylistVideos(
         link: `https://www.youtube.com/watch?v=${videoId}`,
         episodeNumber: undefined,
       };
+    })
+    .filter((video) => {
+      if (isPrivateVideo(video)) {
+        console.log(`[episodeChecker] Ignoring private/deleted video (${video.guid})`);
+        return false;
+      }
+      return true;
     });
 }
 
@@ -107,16 +114,3 @@ export async function fetchYouTubeVideoById(
   };
 }
 
-/**
- * Returns true if the video title matches any of the exclusion keywords.
- * Keywords are comma-separated, matched case-insensitively as substrings.
- */
-export function matchesExclusionFilter(title: string, keywords: string): boolean {
-  if (!keywords.trim()) return false;
-  const lower = title.toLowerCase();
-  return keywords
-    .split(',')
-    .map((k) => k.trim().toLowerCase())
-    .filter(Boolean)
-    .some((keyword) => lower.includes(keyword));
-}

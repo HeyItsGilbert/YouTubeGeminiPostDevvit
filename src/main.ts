@@ -1,10 +1,10 @@
 import { Devvit, SettingScope } from "@devvit/public-api";
 
-import { fetchPlaylistVideos, fetchYouTubeVideoById, matchesExclusionFilter } from "./episodeChecker.js";
+import { fetchPlaylistVideos, fetchYouTubeVideoById } from "./episodeChecker.js";
 import { generateEpisodePost } from "./llmClient.js";
 import { createEpisodePost, updateEpisodePost, applyBotFlair, applyFlair, managePins } from "./postManager.js";
 import { getVideoRecord, setVideoRecord } from "./videoRegistry.js";
-import { assemblePostBody, applyPlaceholders } from "./postUtils.js";
+import { assemblePostBody, applyPlaceholders, matchesExclusionFilter } from "./postUtils.js";
 
 Devvit.configure({
   redditAPI: true,
