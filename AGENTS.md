@@ -127,6 +127,8 @@ Platform-agnostic pure utilities. **No Devvit APIs, no browser-only globals.** S
 | `resolvePlaylistId` | `(playlistId) → string` | Converts a `UC...` channel ID to its `UU...` uploads playlist ID; passes other IDs through unchanged. Used by both `episodeChecker.ts` and the preview app's playlist fetch. |
 | `buildUserMessage` | `(episode) → string` | Assembles the user-turn message sent to Gemini. Conditionally includes `Episode Number` and `Link` fields. |
 | `parseGeneratedResponse` | `(fullText, fallbackTitle) → GeneratedPost` | Splits raw Gemini output into title (first non-empty line) and body (everything after). |
+| `matchesExclusionFilter` | `(title, keywords) → boolean` | Returns true if the title contains any comma-separated keyword (case-insensitive substring match). Used by `main.ts` for the exclusion keyword setting and by the preview app's filter UI. |
+| `isPrivateVideo` | `(video) → boolean` | Returns true if the video title is exactly `"Private video"` — YouTube's placeholder for private/deleted content. Used by `episodeChecker.ts` to filter at the fetch layer. |
 | `assemblePostBody` | `(prependText, rawBody, videoLinkLabel, videoUrl, appendText) → string` | Joins the body parts with `\n\n`, inserting a markdown link only when both label and URL are non-empty. |
 
 **Rule:** Keep this file free of platform-specific imports. If a function needs to grow a Devvit or browser dependency, move it out of `postUtils.ts` into the appropriate module instead.
@@ -139,11 +141,12 @@ Platform-agnostic pure utilities. **No Devvit APIs, no browser-only globals.** S
 
 | Function | Signature | Purpose |
 |---|---|---|
-| `fetchPlaylistVideos` | `(apiKey, playlistId) → Promise<EpisodeData[]>` | Fetches up to 50 items from a playlist, sorts by `publishedAt` descending, returns all as an array. Delegates UC→UU conversion to `resolvePlaylistId` in `postUtils.ts`. |
+| `fetchPlaylistVideos` | `(apiKey, playlistId) → Promise<EpisodeData[]>` | Fetches up to 50 items from a playlist, sorts by `publishedAt` descending, filters out private/deleted videos via `isPrivateVideo`, and returns the rest as an array. Delegates UC→UU conversion to `resolvePlaylistId` in `postUtils.ts`. |
 | `fetchYouTubeVideoById` | `(apiKey, videoId) → Promise<EpisodeData \| null>` | Used by the regeneration flow when the video ID is already known |
-| `matchesExclusionFilter` | `(title, keywords) → boolean` | Returns true if the title contains any comma-separated keyword (case-insensitive) |
 
 **Key detail:** The playlist endpoint returns up to 50 items in API order, which is not necessarily chronological. The module sorts them by `publishedAt` before returning — do not remove this sort. The Uploads playlist (`UU...`) is always newest-first from the API, making the sort a no-op, but it is kept for correctness when a non-uploads playlist is used.
+
+**Private video filtering:** Videos with the exact title `"Private video"` (YouTube's placeholder for private/deleted content) are automatically filtered out at the fetch layer using `isPrivateVideo` from `postUtils.ts`. They never reach the processing loop and are not recorded in the video registry.
 
 ---
 

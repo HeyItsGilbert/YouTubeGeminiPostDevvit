@@ -23,11 +23,12 @@ import {
   ChevronDown,
   ChevronUp,
   MessageSquare,
-  Layout
+  Layout,
+  Filter
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { EpisodeData, GeneratedPost } from '@shared/types';
-import { resolvePlaylistId, buildUserMessage, parseGeneratedResponse, assemblePostBody, applyPlaceholders } from '@shared/postUtils';
+import { resolvePlaylistId, buildUserMessage, parseGeneratedResponse, assemblePostBody, applyPlaceholders, matchesExclusionFilter, isPrivateVideo } from '@shared/postUtils';
 
 const DEFAULT_SYSTEM_PROMPT = `You are a helpful assistant that generates Reddit discussion posts for a podcast.
 The first line of your output should be a catchy, relevant title for the Reddit post.
@@ -117,6 +118,7 @@ export default function App() {
   const [videoLinkLabel, setVideoLinkLabel] = useState(() => localStorage.getItem('yt_video_link_label') || 'Watch on YouTube');
   const [prependText, setPrependText] = useState(() => localStorage.getItem('yt_prepend_text') || '');
   const [appendText, setAppendText] = useState(() => localStorage.getItem('yt_append_text') || '');
+  const [excludeKeywords, setExcludeKeywords] = useState(() => localStorage.getItem('yt_exclude_keywords') || '');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [previewMode, setPreviewMode] = useState<'raw' | 'reddit'>('reddit');
 
@@ -141,7 +143,8 @@ export default function App() {
     localStorage.setItem('yt_video_link_label', videoLinkLabel);
     localStorage.setItem('yt_prepend_text', prependText);
     localStorage.setItem('yt_append_text', appendText);
-  }, [apiKey, playlistId, systemPrompt, selectedModel, videoLinkLabel, prependText, appendText]);
+    localStorage.setItem('yt_exclude_keywords', excludeKeywords);
+  }, [apiKey, playlistId, systemPrompt, selectedModel, videoLinkLabel, prependText, appendText, excludeKeywords]);
 
   // Check API access whenever the key changes (debounced 800 ms)
   useEffect(() => {
@@ -213,9 +216,11 @@ export default function App() {
         description: item.snippet.description || '',
         pubDate: item.snippet.publishedAt,
         link: `https://www.youtube.com/watch?v=${item.snippet.resourceId.videoId}`,
-      })).sort((a: EpisodeData, b: EpisodeData) =>
-        new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime()
-      );
+      }))
+        .filter((v: EpisodeData) => !isPrivateVideo(v))
+        .sort((a: EpisodeData, b: EpisodeData) =>
+          new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime()
+        );
 
       setAvailableVideos(videos);
       if (videos.length > 0) {
@@ -399,6 +404,31 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Exclude Title Keywords */}
+                {availableVideos.length > 0 && (
+                  <div className="space-y-2">
+                    <label className="text-xs font-semibold opacity-70 flex items-center gap-2">
+                      <Filter size={12} />
+                      Exclude Title Keywords
+                    </label>
+                    <input
+                      type="text"
+                      value={excludeKeywords}
+                      onChange={(e) => setExcludeKeywords(e.target.value)}
+                      placeholder='e.g. "trailer, short, bonus"'
+                      className="w-full bg-white border border-[#141414]/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#141414]/5 transition-all"
+                    />
+                    {excludeKeywords.trim() && (() => {
+                      const excludedCount = availableVideos.filter(v => matchesExclusionFilter(v.title, excludeKeywords)).length;
+                      return excludedCount > 0 ? (
+                        <p className="text-[10px] font-semibold text-amber-600">
+                          {excludedCount} video{excludedCount !== 1 ? 's' : ''} would be excluded
+                        </p>
+                      ) : null;
+                    })()}
+                  </div>
+                )}
+
                 {/* Video Selection Dropdown */}
                 {availableVideos.length > 0 && (
                   <div className="space-y-2">
@@ -408,9 +438,14 @@ export default function App() {
                       onChange={(e) => setSelectedVideoId(e.target.value)}
                       className="w-full bg-white border border-[#141414]/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#141414]/5 transition-all appearance-none cursor-pointer"
                     >
-                      {availableVideos.map(v => (
-                        <option key={v.guid} value={v.guid}>{v.title}</option>
-                      ))}
+                      {availableVideos.map(v => {
+                        const excluded = matchesExclusionFilter(v.title, excludeKeywords);
+                        return (
+                          <option key={v.guid} value={v.guid}>
+                            {excluded ? '\u26D4 ' : ''}{v.title}
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
                 )}
