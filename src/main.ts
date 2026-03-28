@@ -56,7 +56,6 @@ Devvit.addSettings([
     scope: SettingScope.Installation,
   },
 
-  // --- Reddit Post Options ---
   // --- Bot Identity ---
   {
     type: 'string',
@@ -108,14 +107,51 @@ Devvit.addSettings([
     defaultValue: '',
     scope: SettingScope.Installation,
   },
+
+  // --- Approval Gate ---
+  {
+    type: 'boolean',
+    name: 'requireModApproval',
+    label: 'Hold posts for mod approval',
+    helpText: 'When enabled, generated posts are queued in the mod inbox for review instead of being submitted immediately. Use "Post pending episode" or "Edit & Post pending episode" in Mod Tools to publish.',
+    defaultValue: false,
+    scope: SettingScope.Installation,
+  },
+  {
+    type: 'number',
+    name: 'autoApproveWindowMinutes',
+    label: 'Auto-approve window (minutes, 0 = off)',
+    helpText: 'Only applies when "Hold posts for mod approval" is on. The post auto-publishes after this many minutes if no mod takes action. Set to 0 to require explicit mod approval with no timeout.',
+    defaultValue: 0,
+    scope: SettingScope.Installation,
+  },
 ]);
 
 
 // ---------------------------------------------------------------------------
-// Google API key management — stored in Redis, set via mod menu
+// Redis key constants
 // ---------------------------------------------------------------------------
 
 const REDIS_KEY_GOOGLE_API_KEY = 'google_api_key';
+const REDIS_KEY_PENDING_POST = 'pending_post';
+const REDIS_KEY_PENDING_POST_JOB_ID = 'pending_post_job_id';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface PendingPost {
+  title: string;
+  body: string;
+  url: string;
+  videoId: string;
+  videoTitle: string;
+  generatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Google API key management — stored in Redis, set via mod menu
+// ---------------------------------------------------------------------------
 
 const apiKeyForm = Devvit.createForm(
   {
@@ -154,6 +190,59 @@ Devvit.addMenuItem({
 });
 
 // ---------------------------------------------------------------------------
+// Edit pending post form — pre-populated from Redis, posts on submit
+// ---------------------------------------------------------------------------
+
+const editPendingPostForm = Devvit.createForm(
+  (data: { title: string; body: string }) => ({
+    title: 'Edit Episode Post',
+    fields: [
+      {
+        type: 'string',
+        name: 'postTitle',
+        label: 'Post Title',
+        defaultValue: data.title,
+        required: true,
+      },
+      {
+        type: 'paragraph',
+        name: 'postBody',
+        label: 'Post Body',
+        defaultValue: data.body,
+        required: true,
+      },
+    ],
+    acceptLabel: 'Post Now',
+    cancelLabel: 'Cancel',
+  }),
+  async ({ values }, context) => {
+    const { redis, scheduler } = context;
+
+    const pendingJson = await redis.get(REDIS_KEY_PENDING_POST);
+    if (!pendingJson) {
+      context.ui.showToast('No pending episode found. It may have already been posted or cancelled.');
+      return;
+    }
+
+    // Write edited content back to Redis before triggering the post job
+    const pending: PendingPost = JSON.parse(pendingJson);
+    pending.title = (values.postTitle as string).trim();
+    pending.body = (values.postBody as string).trim();
+    await redis.set(REDIS_KEY_PENDING_POST, JSON.stringify(pending));
+
+    // Cancel any scheduled auto-approve job — we're posting immediately
+    const existingJobId = await redis.get(REDIS_KEY_PENDING_POST_JOB_ID);
+    if (existingJobId) {
+      try { await scheduler.cancelJob(existingJobId); } catch (_) { /* already fired */ }
+      await redis.del(REDIS_KEY_PENDING_POST_JOB_ID);
+    }
+
+    await scheduler.runJob({ name: 'post_pending_episode', runAt: new Date() });
+    context.ui.showToast('Posting edited episode...');
+  }
+);
+
+// ---------------------------------------------------------------------------
 // Video checker — scheduler job
 // ---------------------------------------------------------------------------
 
@@ -175,6 +264,8 @@ Devvit.addSchedulerJob({
       const prependText = (await settings.get<string>('prependText')) || '';
       const appendText = (await settings.get<string>('appendText')) || '';
       const flairName = (await settings.get<string>('flairName')) || '';
+      const requireModApproval = (await settings.get<boolean>('requireModApproval')) ?? false;
+      const autoApproveWindowMinutes = (await settings.get<number>('autoApproveWindowMinutes')) ?? 0;
 
       // 2. Validate required settings
       if (!googleApiKey) {
@@ -254,7 +345,7 @@ Devvit.addSchedulerJob({
       const episode = episodeToPost;
       console.log(`[bot] New video detected: "${episode.title}"`);
 
-      // 6. Generate post content via Gemini
+      // 5. Generate post content via Gemini
       console.log('[bot] Calling Gemini API...');
       const { title, body: rawBody } = await generateEpisodePost(googleApiKey, episode, systemPrompt, geminiModel);
       console.log(`[bot] Generated title: "${title}"`);
@@ -267,7 +358,76 @@ Devvit.addSchedulerJob({
         applyPlaceholders(appendText, episode),
       );
 
-      // 7. Submit the link post (URL = episode video link, body = generated text)
+      // 6. Queue for mod approval, or post immediately
+      if (requireModApproval) {
+        // If there's already a pending post, don't overwrite it — the mod must act first
+        const existingPending = await redis.get(REDIS_KEY_PENDING_POST);
+        if (existingPending) {
+          console.log('[bot] A post is already pending mod approval. Skipping until it is posted or cancelled.');
+          return;
+        }
+
+        const pendingPost: PendingPost = {
+          title,
+          body,
+          url: episode.link,
+          videoId: episode.guid,
+          videoTitle: episode.title,
+          generatedAt: new Date().toISOString(),
+        };
+        await redis.set(REDIS_KEY_PENDING_POST, JSON.stringify(pendingPost));
+
+        // Schedule auto-approve if a window is configured
+        if (autoApproveWindowMinutes > 0) {
+          const autoApproveAt = new Date(Date.now() + autoApproveWindowMinutes * 60 * 1000);
+          const jobId = await context.scheduler.runJob({
+            name: 'post_pending_episode',
+            runAt: autoApproveAt,
+          });
+          await redis.set(REDIS_KEY_PENDING_POST_JOB_ID, jobId);
+          console.log(`[bot] Post queued for auto-approval in ${autoApproveWindowMinutes} minute(s) — job ${jobId}`);
+        } else {
+          console.log('[bot] Post queued pending explicit mod approval.');
+        }
+
+        // Send modmail notification (non-fatal — post is safely stored in Redis regardless)
+        try {
+          const sub = await reddit.getSubredditByName(subredditName);
+          const autoApproveNote = autoApproveWindowMinutes > 0
+            ? `\n\nThis post will **auto-publish in ${autoApproveWindowMinutes} minute${autoApproveWindowMinutes === 1 ? '' : 's'}** if no mod takes action.`
+            : '';
+          await reddit.modMail.createModInboxConversation({
+            subredditId: sub.id,
+            subject: `New episode ready: ${title}`,
+            bodyMarkdown: [
+              `**New episode ready to review:**`,
+              ``,
+              `**Title:** ${title}`,
+              ``,
+              `---`,
+              ``,
+              body.length > 1000 ? body.slice(0, 1000) + '\n\n*(preview truncated)*' : body,
+              ``,
+              `---`,
+              ``,
+              `**Video:** ${episode.link}`,
+              ``,
+              `Use **Mod Tools** on r/${subredditName} to take action:`,
+              `- **"Post pending episode"** — publish as-is`,
+              `- **"Edit & Post pending episode"** — edit title/body before publishing`,
+              `- **"Cancel pending episode"** — discard this post`,
+              autoApproveNote,
+            ].join('\n'),
+          });
+          console.log('[bot] Sent modmail notification for pending post.');
+        } catch (mailErr) {
+          console.error(`[bot] Failed to send modmail notification: ${mailErr}`);
+        }
+
+        return;
+      }
+
+      // 7. Immediate post path (requireModApproval = false)
       const post = await createEpisodePost(reddit, subredditName, title, episode.link, body);
       console.log(`[bot] Created post ${post.id}`);
 
@@ -290,7 +450,6 @@ Devvit.addSchedulerJob({
       await redis.set('last_episode_guid', episode.guid);
       await redis.set('last_episode_post_id', post.id);
 
-
       console.log(`[bot] Post complete: "${title}"`);
     } catch (err) {
       console.error(`[bot] Video checker failed: ${err}`);
@@ -306,6 +465,71 @@ Devvit.addSchedulerJob({
         } catch (pmErr) {
           console.error(`[bot] Failed to send error notification PM: ${pmErr}`);
         }
+      }
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Post pending episode — scheduler job
+// Handles both explicit mod approval (runAt: new Date()) and auto-approve timer
+// ---------------------------------------------------------------------------
+
+Devvit.addSchedulerJob({
+  name: 'post_pending_episode',
+  onRun: async (_event, context) => {
+    const { redis, reddit, settings } = context;
+
+    try {
+      const pendingJson = await redis.get(REDIS_KEY_PENDING_POST);
+      if (!pendingJson) {
+        // Already posted or cancelled — nothing to do
+        console.log('[bot] post_pending_episode: no pending post found (already posted or cancelled).');
+        return;
+      }
+
+      const pending: PendingPost = JSON.parse(pendingJson);
+      const subredditName = context.subredditName!;
+
+      const flairName = (await settings.get<string>('flairName')) || '';
+      const botFlairEmoji = (await settings.get<string>('botFlairEmoji')) || '';
+      const botFlairText = (await settings.get<string>('botFlairText')) || '';
+
+      console.log(`[bot] Posting pending episode: "${pending.title}"`);
+      const post = await createEpisodePost(reddit, subredditName, pending.title, pending.url, pending.body);
+      console.log(`[bot] Created post ${post.id}`);
+
+      if (flairName) {
+        await applyFlair(reddit, subredditName, post.id, flairName);
+      }
+      await applyBotFlair(reddit, subredditName, botFlairEmoji, botFlairText);
+      await managePins(reddit, redis, post.id);
+
+      await setVideoRecord(redis, pending.videoId, {
+        title: pending.videoTitle,
+        status: 'posted',
+        postId: post.id,
+        processedAt: new Date().toISOString(),
+      });
+      await redis.set('last_episode_guid', pending.videoId);
+      await redis.set('last_episode_post_id', post.id);
+
+      // Clean up pending state
+      await redis.del(REDIS_KEY_PENDING_POST);
+      await redis.del(REDIS_KEY_PENDING_POST_JOB_ID);
+
+      console.log(`[bot] Pending episode posted: "${pending.title}"`);
+    } catch (err) {
+      console.error(`[bot] Failed to post pending episode: ${err}`);
+      const triggeredBy = await redis.get('check_triggered_by');
+      if (triggeredBy) {
+        try {
+          await reddit.sendPrivateMessage({
+            to: triggeredBy,
+            subject: 'Episode post failed',
+            text: `Hi u/${triggeredBy},\n\nFailed to post the pending episode on r/${context.subredditName} with error:\n\n    ${err}\n\nThe episode content is still saved. Try using "Post pending episode" in Mod Tools to retry.`,
+          });
+        } catch (_) {}
       }
     }
   },
@@ -396,6 +620,71 @@ Devvit.addMenuItem({
       console.error(`[bot] Force post trigger failed: ${err}`);
       context.ui.showToast('Failed to trigger force post. See logs.');
     }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Pending episode — mod approval actions
+// ---------------------------------------------------------------------------
+
+Devvit.addMenuItem({
+  label: 'Post pending episode',
+  description: 'Publish the queued episode post as-is.',
+  location: 'subreddit',
+  forUserType: 'moderator',
+  onPress: async (_event, context) => {
+    const { redis, scheduler } = context;
+    const pendingJson = await redis.get(REDIS_KEY_PENDING_POST);
+    if (!pendingJson) {
+      context.ui.showToast('No episode is pending approval.');
+      return;
+    }
+    // Cancel any scheduled auto-approve job before posting now
+    const existingJobId = await redis.get(REDIS_KEY_PENDING_POST_JOB_ID);
+    if (existingJobId) {
+      try { await scheduler.cancelJob(existingJobId); } catch (_) { /* already fired */ }
+      await redis.del(REDIS_KEY_PENDING_POST_JOB_ID);
+    }
+    await scheduler.runJob({ name: 'post_pending_episode', runAt: new Date() });
+    context.ui.showToast('Posting episode...');
+  },
+});
+
+Devvit.addMenuItem({
+  label: 'Edit & Post pending episode',
+  description: 'Edit the queued episode title and body before publishing.',
+  location: 'subreddit',
+  forUserType: 'moderator',
+  onPress: async (_event, context) => {
+    const pendingJson = await context.redis.get(REDIS_KEY_PENDING_POST);
+    if (!pendingJson) {
+      context.ui.showToast('No episode is pending approval.');
+      return;
+    }
+    const pending: PendingPost = JSON.parse(pendingJson);
+    context.ui.showForm(editPendingPostForm, { title: pending.title, body: pending.body });
+  },
+});
+
+Devvit.addMenuItem({
+  label: 'Cancel pending episode',
+  description: 'Discard the queued episode post without publishing.',
+  location: 'subreddit',
+  forUserType: 'moderator',
+  onPress: async (_event, context) => {
+    const { redis, scheduler } = context;
+    const pendingJson = await redis.get(REDIS_KEY_PENDING_POST);
+    if (!pendingJson) {
+      context.ui.showToast('No pending episode to cancel.');
+      return;
+    }
+    const existingJobId = await redis.get(REDIS_KEY_PENDING_POST_JOB_ID);
+    if (existingJobId) {
+      try { await scheduler.cancelJob(existingJobId); } catch (_) { /* already fired */ }
+      await redis.del(REDIS_KEY_PENDING_POST_JOB_ID);
+    }
+    await redis.del(REDIS_KEY_PENDING_POST);
+    context.ui.showToast('Pending episode cancelled.');
   },
 });
 
