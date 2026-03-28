@@ -228,6 +228,9 @@ All settings use `SettingScope.Installation`. Each subreddit configures its own 
 | `prependText` | paragraph | No | `''` | Prepended to final post body |
 | `appendText` | paragraph | No | `''` | Appended to final post body |
 | `flairName` | string | No | `''` | Exact post flair template name (case-insensitive match) |
+| `notificationMods` | string | No | `''` | Comma-separated Reddit usernames to notify when a post is queued (e.g. `"alice, bob"`). Each user receives a PM. When blank, notification goes to the general mod inbox via `createModInboxConversation`. Only applies when `requireModApproval` is true. |
+| `requireModApproval` | boolean | No | `false` | When true, generated posts are stored in Redis and a notification is sent instead of posting immediately. Mods use the "Post pending episode" or "Edit & Post pending episode" menu items to publish. |
+| `autoApproveWindowMinutes` | number | No | `0` | Only applies when `requireModApproval` is true. When > 0, schedules a `post_pending_episode` job to auto-publish after this many minutes if no mod acts first. Set to `0` for indefinite hold. |
 
 The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored directly in Redis via the "Set Google API Key" mod menu form, keeping it out of the visible Devvit settings UI.
 
@@ -239,12 +242,14 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 |---|---|---|---|---|
 | `google_api_key` | string | `apiKeyForm` handler | `check_new_episodes`, `regenerate_latest_post` | Google API key for both YouTube and Gemini |
 | `video_registry` | hash | `check_new_episodes` (step 4, 11) | `check_new_episodes` (step 4) | Hash of videoId → `VideoRecord` JSON. Tracks every seen video with status `posted`, `excluded`, or `skipped`. |
-| `last_episode_guid` | string | `check_new_episodes` (step 11) | `regenerate_latest_post` | Legacy: YouTube video ID of last posted video — kept for backwards compatibility |
-| `last_episode_post_id` | string | `check_new_episodes` (step 11) | `managePins`, `regenerate_latest_post` | Reddit post ID of the currently pinned post |
+| `last_episode_guid` | string | `check_new_episodes` (step 11), `post_pending_episode` | `regenerate_latest_post` | Legacy: YouTube video ID of last posted video — kept for backwards compatibility |
+| `last_episode_post_id` | string | `check_new_episodes` (step 11), `post_pending_episode` | `managePins`, `regenerate_latest_post` | Reddit post ID of the currently pinned post |
 | `episode_checker_job_id` | string | `AppInstall` trigger | `AppInstall` trigger | Scheduler job ID, used to cancel and re-create on reinstall |
 | `force_repost` | string (`'1'`) | "Force post latest video" menu item | `check_new_episodes` (step 4a) | One-shot flag: skip registry check for the newest video on the next run. Deleted immediately when read. |
-| `check_triggered_by` | string | "Check for new videos" / "Force post" menu items | `check_new_episodes` error handler | Username of the mod who manually triggered; used to send a PM on failure |
+| `check_triggered_by` | string | "Check for new videos" / "Force post" menu items | `check_new_episodes` error handler, `post_pending_episode` error handler | Username of the mod who manually triggered; used to send a PM on failure |
 | `regenerate_triggered_by` | string | "Regenerate latest post" menu item | `regenerate_latest_post` error handler | Username of the mod who triggered regeneration; used to send a PM on failure |
+| `pending_post` | string (JSON) | `check_new_episodes` (approval gate path) | `post_pending_episode`, "Post pending episode" / "Edit & Post" / "Cancel" menu items | Serialised `PendingPost` object holding generated title, body, url, videoId, videoTitle, and generatedAt timestamp. Deleted when the post goes live or is cancelled. |
+| `pending_post_job_id` | string | `check_new_episodes` (when `autoApproveWindowMinutes > 0`) | "Post pending episode" / "Edit & Post" / "Cancel" menu items | Scheduler job ID for the auto-approve timer. Cancelled and deleted when a mod acts first. |
 
 **Resetting state:** To force a repost of the latest video, use the "Force post latest video (testing)" mod menu item. To manually clear a video from the registry, delete its field from the `video_registry` hash in Redis.
 
@@ -255,6 +260,7 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | Job name | Schedule | Trigger |
 |---|---|---|
 | `check_new_episodes` | `*/30 * * * *` (cron) | Scheduled at `AppInstall`. Also triggered immediately by "Check for new videos" mod menu item via `runAt: new Date()` |
+| `post_pending_episode` | No fixed schedule | Triggered immediately by "Post pending episode" and "Edit & Post pending episode" menu items. Also scheduled at `now + autoApproveWindowMinutes` by `check_new_episodes` when `requireModApproval` is true and a window is configured. |
 | `regenerate_latest_post` | No fixed schedule | Only triggered by "Regenerate latest post" mod menu item via `runAt: new Date()` |
 
 The `AppInstall` trigger cancels any existing job ID before scheduling a new one, making reinstalls idempotent.
