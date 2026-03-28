@@ -53,6 +53,9 @@ In your subreddit's app settings page (Mod Tools > Installed Apps), configure:
 - **Append Text** (optional) -- Text added to the bottom of every post body (e.g. a footer or recurring links).
 - **Post Flair** (optional) -- The exact name of a post flair template on your subreddit.
 - **Gemini Model** (optional) -- Defaults to `gemini-2.0-flash` (free tier).
+- **Hold posts for mod approval** (optional) -- When enabled, generated posts are queued for mod review instead of posting immediately. Use the mod menu items to publish, edit, or cancel.
+- **Auto-approve window** (optional) -- Minutes to wait before auto-publishing a queued post if no mod acts. Set to 0 for indefinite hold. Only applies when mod approval is enabled.
+- **Notification Recipients** (optional) -- Comma-separated Reddit usernames to notify when a post is queued (e.g. `alice, bob`). Falls back to general mod inbox when blank.
 
 ## 5. HTTP domains
 
@@ -79,6 +82,8 @@ Both `youtube.googleapis.com` and `generativelanguage.googleapis.com` are on the
 | `force_repost`            | One-shot flag: skip registry check for newest video next run     |
 | `check_triggered_by`      | Mod username — used to PM on failure after manual trigger        |
 | `regenerate_triggered_by` | Mod username — used to PM on failure after regeneration trigger  |
+| `pending_post`            | JSON blob of queued post (title, body, url, videoId, etc.)       |
+| `pending_post_job_id`     | Scheduler job ID for the auto-approve timer                      |
 
 # Learn more
 
