@@ -334,6 +334,7 @@ Currently one playlist ID per subreddit installation. To fan out, the `check_new
 - `tsconfig.json` uses `"moduleResolution": "Bundler"` (Devvit requirement).
 - Compiled `.js` files are **not committed** (`src/*.js` is gitignored). Devvit compiles TypeScript during `devvit upload`. Run `npm run type-check` to verify types locally before deploying.
 - The `devDependencies` include `dotenv-cli` to inject a `.env` file during `devvit playtest` (the `dev` script). Create a `.env` file if needed for local playtest overrides — it is gitignored.
+- **Devvit releases frequently.** Before starting work, check for a newer version of `@devvit/public-api` and `devvit` by running `npm outdated @devvit/public-api devvit`. If a newer version is available, update both packages (`npm install @devvit/public-api@latest devvit@latest`) and run `npm run type-check` to catch any breaking changes before making other modifications.
 
 ---
 

@@ -6,3 +6,5 @@ src/*.js
 preview-site/node_modules/
 preview-site/dist/
 preview-site/.env
+
+.claude/settings.local.json

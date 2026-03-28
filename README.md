@@ -9,6 +9,8 @@ Demo: <https://www.youtube.com/watch?v=Xdm_pJxI6Yo>
 You can use the [YouTube + Gemini Post Companion Site](https://youtubegeminipostdevvit.netlify.app/)
 to validate your API key and test different prompts.
 
+Issues & Requests: [HeyItsGilbert/YouTubeGeminiPostDevvit](https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/issues)
+
 ## What it does
 
 - **Monitors a YouTube playlist** every 30 minutes via a scheduled job
@@ -17,14 +19,17 @@ to validate your API key and test different prompts.
 - **Submits a link post** to the subreddit — the post links directly to the YouTube video, with the generated text as the post body
 - **Rotates the pin** — pins the new post and unpins the previous one
 - **Notifies the triggering mod by PM** if a manually triggered action fails
+- **Optional mod approval gate** — hold generated posts for review before publishing, with an optional auto-approve timer
 
 Moderator menu items let mods trigger an immediate check ("Check for new
 videos"), force a re-post of the latest video bypassing deduplication ("Force
 post latest video (testing)"), or regenerate the body of the latest post
-("Regenerate latest post"). If any manual action fails, the triggering mod
-receives a Reddit PM with the error details. Scheduled (cron) runs are
-self-healing — state is only persisted on success, so the next 30-minute tick
-retries automatically.
+("Regenerate latest post"). When mod approval is enabled, mods can publish
+as-is ("Post pending episode"), edit before publishing ("Edit & Post pending
+episode"), or discard ("Cancel pending episode"). If any manual action fails,
+the triggering mod receives a Reddit PM with the error details. Scheduled
+(cron) runs are self-healing — state is only persisted on success, so the next
+30-minute tick retries automatically.
 
 ## API Key
 
@@ -41,17 +46,21 @@ the new project, and enable both the **YouTube Data API v3**.
 
 All settings are configured per subreddit in the app's installation settings.
 
-| Name                | Type      | Secret | Default            | Description                                                                                                                                               |
-|---------------------|-----------|--------|--------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `youtubePlaylistId` | string    | No     | --                 | YouTube playlist ID to monitor                                                                                                                            |
-| `geminiModel`       | string    | No     | `gemini-2.0-flash` | Gemini model for post generation                                                                                                                          |
-| `systemPrompt`      | paragraph | No     | --                 | Full system prompt for Gemini (controls voice, structure, rules). The user message will include: **Title**, **Published**, **Link**, and **Description**. |
-| `botFlairEmoji`     | string    | No     | *(empty)*          | Emoji for the bot's author flair on this subreddit, e.g. `🎙️`                                                                                            |
-| `botFlairText`      | string    | No     | *(empty)*          | Text for the bot's author flair, e.g. `Podcast Bot`. Combined with emoji if both are set.                                                                 |
-| `videoLinkLabel`    | string    | No     | *(empty)*          | If set, inserts a markdown link to the video between the body and append text, e.g. `Watch on YouTube` → `[Watch on YouTube](url)`                        |
-| `prependText`       | paragraph | No     | *(empty)*          | Text prepended to every generated post body (e.g. recurring links, disclaimers)                                                                           |
-| `appendText`        | paragraph | No     | *(empty)*          | Text appended to every generated post body (e.g. footers, recurring links)                                                                                |
-| `flairName`         | string    | No     | *(empty)*          | Post flair to apply (exact name match, optional)                                                                                                          |
+| Name                       | Type      | Secret | Default            | Description                                                                                                                                  |
+|----------------------------|-----------|--------|--------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
+| `youtubePlaylistId`        | string    | No     | --                 | YouTube playlist ID to monitor                                                                                                               |
+| `excludeTitleKeywords`     | string    | No     | *(empty)*          | Comma-separated keywords. Videos whose titles contain any keyword are permanently skipped (e.g. `trailer, short, bonus`)                     |
+| `geminiModel`              | string    | No     | `gemini-2.0-flash` | Gemini model for post generation                                                                                                             |
+| `systemPrompt`             | paragraph | No     | --                 | System prompt for Gemini. User message includes Title, Published, Link, and Description                                                      |
+| `botFlairEmoji`            | string    | No     | *(empty)*          | Emoji for the bot's author flair on this subreddit, e.g. `🎙️`                                                                               |
+| `botFlairText`             | string    | No     | *(empty)*          | Text for the bot's author flair, e.g. `Podcast Bot`. Combined with emoji if both are set                                                     |
+| `videoLinkLabel`           | string    | No     | *(empty)*          | If set, inserts a markdown link to the video between body and append text, e.g. `Watch on YouTube` produces `[label](url)`                   |
+| `prependText`              | paragraph | No     | *(empty)*          | Text prepended to every generated post body (e.g. recurring links, disclaimers)                                                              |
+| `appendText`               | paragraph | No     | *(empty)*          | Text appended to every generated post body (e.g. footers, recurring links)                                                                   |
+| `flairName`                | string    | No     | *(empty)*          | Post flair to apply (exact name match, optional)                                                                                             |
+| `notificationMods`         | string    | No     | *(empty)*          | Comma-separated Reddit usernames to notify when a post is queued (e.g. `alice, bob`). Falls back to mod inbox when blank                     |
+| `requireModApproval`       | boolean   | No     | `false`            | When enabled, generated posts are queued for mod review instead of posting immediately                                                       |
+| `autoApproveWindowMinutes` | number    | No     | `0`                | Minutes before auto-publishing a queued post if no mod acts. `0` = indefinite hold. Only applies when mod approval is enabled                |
 
 ## Developers
 

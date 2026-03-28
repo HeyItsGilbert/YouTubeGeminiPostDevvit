@@ -236,7 +236,7 @@ Devvit.addMenuItem({
 // ---------------------------------------------------------------------------
 
 const editPendingPostForm = Devvit.createForm(
-  (data: { title: string; body: string }) => ({
+  (data: { [key: string]: any }) => ({
     title: 'Edit Episode Post',
     fields: [
       {
@@ -405,7 +405,8 @@ Devvit.addSchedulerJob({
       );
 
       // 6. Queue for mod approval, or post immediately
-      if (requireModApproval) {
+      //    Force-repost always queues so mods can test the approval flow.
+      if (requireModApproval || forceRepost) {
         // If there's already a pending post, don't overwrite it — the mod must act first
         const existingPending = await redis.get(REDIS_KEY_PENDING_POST);
         if (existingPending) {
@@ -437,19 +438,12 @@ Devvit.addSchedulerJob({
         }
 
         // Send notification (non-fatal — post is safely stored in Redis regardless)
+        // Message 1: notification with instructions
         const autoApproveNote = autoApproveWindowMinutes > 0
           ? `\n\nThis post will **auto-publish in ${autoApproveWindowMinutes} minute${autoApproveWindowMinutes === 1 ? '' : 's'}** if no mod takes action.`
           : '';
-        const notificationBodyMarkdown = [
-          `**New episode ready to review:**`,
-          ``,
-          `**Title:** ${title}`,
-          ``,
-          `---`,
-          ``,
-          body.length > 1000 ? body.slice(0, 1000) + '\n\n*(preview truncated)*' : body,
-          ``,
-          `---`,
+        const notificationBody = [
+          `**New episode ready to review:** ${episode.title}`,
           ``,
           `**Video:** ${episode.link}`,
           ``,
@@ -460,14 +454,24 @@ Devvit.addSchedulerJob({
           autoApproveNote,
         ].join('\n');
 
+        // Message 2: the generated post content
+        const postPreviewBody = [
+          `**Title:** ${title}`,
+          ``,
+          `---`,
+          ``,
+          body.length > 1000 ? body.slice(0, 1000) + '\n\n*(preview truncated)*' : body,
+        ].join('\n');
+
         if (notificationMods.length > 0) {
-          // Notify each listed mod via private message
+          // PMs have no reply API, so combine both sections into one message
+          const combinedPmBody = [notificationBody, '', '---', '', postPreviewBody].join('\n');
           for (const modUsername of notificationMods) {
             try {
               await reddit.sendPrivateMessage({
                 to: modUsername,
                 subject: `New episode ready: ${title}`,
-                text: notificationBodyMarkdown,
+                text: combinedPmBody,
               });
               console.log(`[bot] Sent pending-post notification PM to u/${modUsername}`);
             } catch (pmErr) {
@@ -475,13 +479,14 @@ Devvit.addSchedulerJob({
             }
           }
         } else {
-          // Fall back to general mod inbox via modmail
+          // Mod inbox conversations are read-only, so combine both sections
           try {
+            const combinedBody = [notificationBody, '', '---', '', postPreviewBody].join('\n');
             const sub = await reddit.getSubredditByName(subredditName);
             await reddit.modMail.createModInboxConversation({
               subredditId: sub.id,
               subject: `New episode ready: ${title}`,
-              bodyMarkdown: notificationBodyMarkdown,
+              bodyMarkdown: combinedBody,
             });
             console.log('[bot] Sent modmail notification for pending post.');
           } catch (mailErr) {
