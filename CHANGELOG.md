@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.1.3] 2026-04-10
+## [0.1.4] 2026-04-10
 
 ### Fixed
 
@@ -74,7 +74,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   queue to exercise the full moderation workflow.
 
 [Unreleased]:
-  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.3...HEAD
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.4...HEAD
+[0.1.4]:
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.3...v0.1.4
 [0.1.3]:
   https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.2...v0.1.3
 [0.1.2]:
