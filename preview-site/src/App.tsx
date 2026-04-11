@@ -133,6 +133,8 @@ export default function App() {
   const [copied, setCopied] = useState<'title' | 'body' | 'model' | null>(null);
   const [geminiStatus, setGeminiStatus] = useState<ApiStatus>('idle');
   const [youtubeStatus, setYoutubeStatus] = useState<ApiStatus>('idle');
+  const [slowWarning, setSlowWarning] = useState(false);
+  const [generationElapsedMs, setGenerationElapsedMs] = useState<number | null>(null);
 
   // Persist settings
   useEffect(() => {
@@ -247,10 +249,14 @@ export default function App() {
     }
 
     setIsGenerating(true);
+    setSlowWarning(false);
+    setGenerationElapsedMs(null);
     setError(null);
     setGeneratedPost(null);
     setFetchedVideo(video);
 
+    const genStart = Date.now();
+    const slowTimer = setTimeout(() => setSlowWarning(true), 25_000);
     try {
       const ai = new GoogleGenAI({ apiKey });
 
@@ -278,11 +284,13 @@ export default function App() {
       );
 
       setGeneratedPost({ title, body: finalBody });
+      setGenerationElapsedMs(Date.now() - genStart);
 
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'An unexpected error occurred.');
     } finally {
+      clearTimeout(slowTimer);
       setIsGenerating(false);
     }
   };
@@ -610,6 +618,23 @@ export default function App() {
                     <h3 className="font-bold text-xl">Generating Post...</h3>
                     <p className="text-sm opacity-40">Consulting Gemini for the selected video.</p>
                   </div>
+                  <AnimatePresence>
+                    {slowWarning && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className="bg-amber-50 border border-amber-200 text-amber-700 px-5 py-3 rounded-xl flex items-start gap-3 text-left max-w-sm"
+                      >
+                        <AlertCircle size={16} className="shrink-0 mt-0.5" />
+                        <p className="text-xs font-medium leading-relaxed">
+                          This is taking close to 30 seconds. Devvit enforces a
+                          30s HTTP timeout — your live bot may time out with
+                          this model or system prompt.
+                        </p>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </motion.div>
               )}
 
@@ -620,6 +645,24 @@ export default function App() {
                   animate={{ opacity: 1, y: 0 }}
                   className="space-y-8"
                 >
+                  {/* Slow generation warning */}
+                  {generationElapsedMs !== null && generationElapsedMs >= 25_000 && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="bg-amber-50 border border-amber-200 text-amber-700 p-4 rounded-xl flex items-start gap-3"
+                    >
+                      <AlertCircle size={16} className="shrink-0 mt-0.5" />
+                      <p className="text-xs font-medium leading-relaxed">
+                        Generation took{' '}
+                        <span className="font-bold">{(generationElapsedMs / 1000).toFixed(1)}s</span>
+                        {' '}— close to Devvit's 30-second HTTP timeout. Consider
+                        a shorter system prompt or a faster model to avoid
+                        timeouts in the live bot.
+                      </p>
+                    </motion.div>
+                  )}
+
                   {/* Fetched Video Card */}
                   <div className="bg-white border border-[#141414]/5 rounded-3xl p-8 space-y-6">
                     <div className="flex items-center justify-between">

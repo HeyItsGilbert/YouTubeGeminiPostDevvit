@@ -1,18 +1,1 @@
-{
-  "root": [
-    "./preview-site/vite.config.ts",
-    "./preview-site/dist/assets/index-bhdnd8zd.js",
-    "./preview-site/src/app.tsx",
-    "./preview-site/src/main.tsx",
-    "./preview-site/src/vite-env.d.ts",
-    "./src/episodechecker.ts",
-    "./src/llmclient.ts",
-    "./src/main.ts",
-    "./src/postmanager.ts",
-    "./src/postutils.ts",
-    "./src/types.ts",
-    "./src/videoregistry.ts"
-  ],
-  "errors": true,
-  "version": "5.8.3"
-}
+{"root":["./src/episodechecker.ts","./src/llmclient.ts","./src/main.ts","./src/postmanager.ts","./src/postutils.ts","./src/types.ts","./src/videoregistry.ts"],"version":"5.8.3"}
