@@ -29,7 +29,7 @@ export interface VideoRecord {
   /** Video title at the time of processing */
   title: string;
   /** Outcome of processing this video */
-  status: 'posted' | 'excluded' | 'skipped';
+  status: 'posted' | 'excluded' | 'skipped' | 'private';
   /** Reddit post ID — only set when status is 'posted' */
   postId?: string;
   /** ISO 8601 timestamp when the record was written */

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.2] 2026-04-10
+
+### Fixed
+
+- Private videos that become public are now detected and posted rather
+  than being permanently skipped. The bot now records private videos in
+  the registry with a new `'private'` status. On each run, any video
+  that transitions from `'private'` to public is treated as a new,
+  unregistered video and queued for posting. A formerly-private video
+  that goes public in the same run as a newer video keeps its
+  `'private'` registry entry so it is picked up by the following run.
+
 ## [0.1.1] 2026-04-10
 
 ### Changed
@@ -40,6 +52,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   queue to exercise the full moderation workflow.
 
 [Unreleased]:
-  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.0...HEAD
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.2...HEAD
+[0.1.2]:
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.1...v0.1.2
+[0.1.1]:
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.0...v0.1.1
 [0.1.0]:
   https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/a55d564...v0.1.0

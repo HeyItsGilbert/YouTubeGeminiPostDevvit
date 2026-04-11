@@ -4,7 +4,7 @@ import { fetchPlaylistVideos, fetchYouTubeVideoById } from "./episodeChecker.js"
 import { generateEpisodePost } from "./llmClient.js";
 import { createEpisodePost, updateEpisodePost, applyBotFlair, applyFlair, managePins } from "./postManager.js";
 import { getVideoRecord, setVideoRecord } from "./videoRegistry.js";
-import { assemblePostBody, applyPlaceholders, matchesExclusionFilter } from "./postUtils.js";
+import { assemblePostBody, applyPlaceholders, matchesExclusionFilter, isPrivateVideo } from "./postUtils.js";
 
 Devvit.configure({
   redditAPI: true,
@@ -338,9 +338,10 @@ Devvit.addSchedulerJob({
       }
 
       // 4. Walk videos newest-first; find the first unregistered, non-excluded video.
-      //    We scan past already-known videos instead of stopping at them so that
-      //    videos which were private (invisible to the API) when earlier videos
-      //    were posted are still detected once they become public.
+      //    Private videos are tracked in the registry (status: 'private') so that when
+      //    they become public they are detected as new rather than skipped.  A formerly-
+      //    private video that goes public in the same run as a newer video is left with
+      //    its 'private' registry entry so it is picked up by the next run.
       const forceRepost = (await redis.get('force_repost')) === '1';
       if (forceRepost) {
         await redis.del('force_repost');
@@ -350,12 +351,33 @@ Devvit.addSchedulerJob({
       let episodeToPost = null;
 
       for (const video of videos) {
+        // Track private videos in the registry so we can detect when they go public.
+        if (isPrivateVideo(video)) {
+          const existingRecord = await getVideoRecord(redis, video.guid);
+          if (!existingRecord || existingRecord.status !== 'private') {
+            console.log(`[bot] Registering private video ${video.guid} for future tracking`);
+            await setVideoRecord(redis, video.guid, {
+              title: video.title,
+              status: 'private',
+              processedAt: new Date().toISOString(),
+            });
+          }
+          continue;
+        }
+
         // Skip registry check for the very first (newest) video when force_repost is active
+        let wasPreviouslyPrivate = false;
         if (!forceRepost || episodeToPost !== null) {
           const record = await getVideoRecord(redis, video.guid);
           if (record) {
-            console.log(`[bot] Skipping "${video.title}" (${video.guid}) — already ${record.status}`);
-            continue; // Already handled — keep scanning for gaps
+            if (record.status === 'private') {
+              // Video was private before — it's now public, treat as new
+              console.log(`[bot] "${video.title}" (${video.guid}) was private, now public — treating as new`);
+              wasPreviouslyPrivate = true;
+            } else {
+              console.log(`[bot] Skipping "${video.title}" (${video.guid}) — already ${record.status}`);
+              continue; // Already handled — keep scanning for gaps
+            }
           }
         }
 
@@ -372,14 +394,17 @@ Devvit.addSchedulerJob({
         if (!episodeToPost) {
           // Newest unregistered, non-excluded video — this is the one to post
           episodeToPost = video;
-        } else {
-          // Older unregistered video — mark as skipped so it's never posted
+        } else if (!wasPreviouslyPrivate) {
+          // Older brand-new unregistered video — mark as skipped so it's never posted
           console.log(`[bot] Skipping "${video.title}" (${video.guid}) — older than the video to post`);
           await setVideoRecord(redis, video.guid, {
             title: video.title,
             status: 'skipped',
             processedAt: new Date().toISOString(),
           });
+          // else: formerly-private video that just became public but there's a newer video
+          // to post this run — leave its registry entry as 'private' so the next run
+          // detects it as newly public and posts it then.
         }
       }
 
