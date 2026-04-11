@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.3] 2026-04-10
+
+### Fixed
+
+- Playlist fetch now paginates through all pages (50 items per page)
+  rather than stopping at the first 50. Custom `PL…` playlists return
+  items in insertion order, so newer episodes beyond position 50 were
+  never seen by the bot.
+
+### Changed
+
+- All log lines in the `check_new_episodes` job now include the
+  subreddit name in the prefix (e.g. `[bot:my_subreddit]`) so entries
+  from different installs are easy to filter in `devvit logs`.
+
+### Added
+
+- Preview site: slow-generation warning banner appears after 25 seconds
+  of generation, alerting users that Devvit enforces a 30-second HTTP
+  timeout. Elapsed time is also shown on the result card when generation
+  takes 25 seconds or more.
+
 ## [0.1.2] 2026-04-10
 
 ### Fixed
@@ -52,7 +74,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   queue to exercise the full moderation workflow.
 
 [Unreleased]:
-  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.2...HEAD
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.3...HEAD
+[0.1.3]:
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.2...v0.1.3
 [0.1.2]:
   https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.1...v0.1.2
 [0.1.1]:

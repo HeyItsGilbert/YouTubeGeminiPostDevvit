@@ -4,6 +4,7 @@ import { resolvePlaylistId } from './postUtils.js';
 const YT_API_BASE = 'https://youtube.googleapis.com/youtube/v3';
 
 interface YouTubePlaylistResponse {
+  nextPageToken?: string;
   items?: Array<{
     snippet: {
       publishedAt: string;
@@ -17,10 +18,14 @@ interface YouTubePlaylistResponse {
 }
 
 /**
- * Fetch up to 50 videos from a YouTube playlist, sorted newest-first.
+ * Fetch all videos from a YouTube playlist, sorted newest-first.
+ * Paginates through all pages (50 items each) until the full list is
+ * retrieved, then sorts by publishedAt descending.
+ *
  * If a channel ID (UC...) is supplied it is silently converted to the
- * corresponding Uploads playlist (UU...) which the API returns in
- * chronological-descending order, reducing the need for paging.
+ * corresponding Uploads playlist (UU...) which the API already returns
+ * in chronological-descending order, making the sort a no-op.
+ *
  * Returns an empty array if the playlist has no videos.
  */
 export async function fetchPlaylistVideos(
@@ -32,20 +37,33 @@ export async function fetchPlaylistVideos(
     console.log(`[episodeChecker] Converted channel ID ${playlistId} → uploads playlist ${resolvedId}`);
   }
 
-  const url =
-    `${YT_API_BASE}/playlistItems` +
-    `?part=snippet&maxResults=50&playlistId=${encodeURIComponent(resolvedId)}&key=${encodeURIComponent(apiKey)}`;
+  const allItems: NonNullable<YouTubePlaylistResponse['items']> = [];
+  let pageToken: string | undefined;
 
-  const response = await fetch(url);
-  if (!response.ok) {
-    const errText = await response.text().catch(() => '(unreadable)');
-    throw new Error(`YouTube API error ${response.status}: ${errText}`);
-  }
+  do {
+    const url =
+      `${YT_API_BASE}/playlistItems` +
+      `?part=snippet&maxResults=50&playlistId=${encodeURIComponent(resolvedId)}&key=${encodeURIComponent(apiKey)}` +
+      (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
 
-  const data = (await response.json()) as YouTubePlaylistResponse;
-  if (!data.items?.length) return [];
+    const response = await fetch(url);
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '(unreadable)');
+      throw new Error(`YouTube API error ${response.status}: ${errText}`);
+    }
 
-  return [...data.items]
+    const data = (await response.json()) as YouTubePlaylistResponse;
+    if (data.items?.length) {
+      allItems.push(...data.items);
+    }
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+
+  console.log(`[episodeChecker] Fetched ${allItems.length} videos from playlist ${resolvedId}`);
+
+  if (!allItems.length) return [];
+
+  return [...allItems]
     .sort(
       (a, b) =>
         new Date(b.snippet.publishedAt).getTime() -

@@ -327,13 +327,14 @@ Devvit.addSchedulerJob({
         return;
       }
 
-      // 3. Fetch playlist videos (newest first, up to 50)
+      // 3. Fetch playlist videos (newest first, full list)
       const subredditName = context.subredditName!;
-      console.log(`[bot] Checking playlist ${playlistId} for ${subredditName}...`);
+      const log = (msg: string) => console.log(`[bot:${subredditName}] ${msg}`);
+      log(`Checking playlist ${playlistId}...`);
       const videos = await fetchPlaylistVideos(googleApiKey, playlistId);
 
       if (!videos.length) {
-        console.log('[bot] No videos found in YouTube playlist.');
+        log('No videos found in YouTube playlist.');
         return;
       }
 
@@ -345,7 +346,7 @@ Devvit.addSchedulerJob({
       const forceRepost = (await redis.get('force_repost')) === '1';
       if (forceRepost) {
         await redis.del('force_repost');
-        console.log('[bot] force_repost flag set — bypassing registry check for newest video');
+        log('force_repost flag set — bypassing registry check for newest video');
       }
 
       let episodeToPost = null;
@@ -355,7 +356,7 @@ Devvit.addSchedulerJob({
         if (isPrivateVideo(video)) {
           const existingRecord = await getVideoRecord(redis, video.guid);
           if (!existingRecord || existingRecord.status !== 'private') {
-            console.log(`[bot] Registering private video ${video.guid} for future tracking`);
+            log(`Registering private video ${video.guid} for future tracking`);
             await setVideoRecord(redis, video.guid, {
               title: video.title,
               status: 'private',
@@ -372,17 +373,17 @@ Devvit.addSchedulerJob({
           if (record) {
             if (record.status === 'private') {
               // Video was private before — it's now public, treat as new
-              console.log(`[bot] "${video.title}" (${video.guid}) was private, now public — treating as new`);
+              log(`"${video.title}" (${video.guid}) was private, now public — treating as new`);
               wasPreviouslyPrivate = true;
             } else {
-              console.log(`[bot] Skipping "${video.title}" (${video.guid}) — already ${record.status}`);
+              log(`Skipping "${video.title}" (${video.guid}) — already ${record.status}`);
               continue; // Already handled — keep scanning for gaps
             }
           }
         }
 
         if (matchesExclusionFilter(video.title, excludeKeywords)) {
-          console.log(`[bot] Excluding video "${video.title}" (matches exclusion filter)`);
+          log(`Excluding video "${video.title}" (matches exclusion filter)`);
           await setVideoRecord(redis, video.guid, {
             title: video.title,
             status: 'excluded',
@@ -396,7 +397,7 @@ Devvit.addSchedulerJob({
           episodeToPost = video;
         } else if (!wasPreviouslyPrivate) {
           // Older brand-new unregistered video — mark as skipped so it's never posted
-          console.log(`[bot] Skipping "${video.title}" (${video.guid}) — older than the video to post`);
+          log(`Skipping "${video.title}" (${video.guid}) — older than the video to post`);
           await setVideoRecord(redis, video.guid, {
             title: video.title,
             status: 'skipped',
@@ -409,17 +410,17 @@ Devvit.addSchedulerJob({
       }
 
       if (!episodeToPost) {
-        console.log(`[bot] No new video to post.`);
+        log('No new video to post.');
         return;
       }
 
       const episode = episodeToPost;
-      console.log(`[bot] New video detected: "${episode.title}"`);
+      log(`New video detected: "${episode.title}"`);
 
       // 5. Generate post content via Gemini
-      console.log('[bot] Calling Gemini API...');
+      log('Calling Gemini API...');
       const { title, body: rawBody } = await generateEpisodePost(googleApiKey, episode, systemPrompt, geminiModel);
-      console.log(`[bot] Generated title: "${title}"`);
+      log(`Generated title: "${title}"`);
 
       const body = assemblePostBody(
         applyPlaceholders(prependText, episode),
@@ -435,7 +436,7 @@ Devvit.addSchedulerJob({
         // If there's already a pending post, don't overwrite it — the mod must act first
         const existingPending = await redis.get(REDIS_KEY_PENDING_POST);
         if (existingPending) {
-          console.log('[bot] A post is already pending mod approval. Skipping until it is posted or cancelled.');
+          log('A post is already pending mod approval. Skipping until it is posted or cancelled.');
           return;
         }
 
@@ -457,9 +458,9 @@ Devvit.addSchedulerJob({
             runAt: autoApproveAt,
           });
           await redis.set(REDIS_KEY_PENDING_POST_JOB_ID, jobId);
-          console.log(`[bot] Post queued for auto-approval in ${autoApproveWindowMinutes} minute(s) — job ${jobId}`);
+          log(`Post queued for auto-approval in ${autoApproveWindowMinutes} minute(s) — job ${jobId}`);
         } else {
-          console.log('[bot] Post queued pending explicit mod approval.');
+          log('Post queued pending explicit mod approval.');
         }
 
         // Send notification (non-fatal — post is safely stored in Redis regardless)
@@ -498,9 +499,9 @@ Devvit.addSchedulerJob({
                 subject: `New episode ready: ${title}`,
                 text: combinedPmBody,
               });
-              console.log(`[bot] Sent pending-post notification PM to u/${modUsername}`);
+              log(`Sent pending-post notification PM to u/${modUsername}`);
             } catch (pmErr) {
-              console.error(`[bot] Failed to send notification PM to u/${modUsername}: ${pmErr}`);
+              console.error(`[bot:${subredditName}] Failed to send notification PM to u/${modUsername}: ${pmErr}`);
             }
           }
         } else {
@@ -513,9 +514,9 @@ Devvit.addSchedulerJob({
               subject: `New episode ready: ${title}`,
               bodyMarkdown: combinedBody,
             });
-            console.log('[bot] Sent modmail notification for pending post.');
+            log('Sent modmail notification for pending post.');
           } catch (mailErr) {
-            console.error(`[bot] Failed to send modmail notification: ${mailErr}`);
+            console.error(`[bot:${subredditName}] Failed to send modmail notification: ${mailErr}`);
           }
         }
 
@@ -524,7 +525,7 @@ Devvit.addSchedulerJob({
 
       // 7. Immediate post path (requireModApproval = false)
       const post = await createEpisodePost(reddit, subredditName, title, episode.link, body);
-      console.log(`[bot] Created post ${post.id}`);
+      log(`Created post ${post.id}`);
 
       // 8. Apply post flair and bot author flair (if configured)
       if (flairName) {
