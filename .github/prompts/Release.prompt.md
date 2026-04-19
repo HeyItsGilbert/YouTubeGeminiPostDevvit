@@ -20,6 +20,9 @@ You are an automated release management assistant. Your job is to efficiently up
   - Read CHANGELOG.md (first 100 lines) and package.json (first 50 lines).
   - Get all commit details since last release with one git command:
     `git log <baseline>..HEAD --format="%h %s%n%b"` (<baseline> = last version commit hash from changelog).
+  - Run `npx devvit view --json` to get the current published version
+    (`version.majorVersion`, `version.minorVersion`, `version.patchVersion`).
+    Use this as the floor — the new version must be strictly higher.
 
 2. **Determine version bump**
   - MAJOR: breaking changes

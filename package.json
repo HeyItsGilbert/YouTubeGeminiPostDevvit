@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "youtube-gemini",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "license": "BSD-3-Clause",
   "type": "module",
   "scripts": {
@@ -12,10 +12,11 @@
     "type-check": "tsc --build"
   },
   "dependencies": {
-    "@devvit/public-api": "^0.12.18"
+    "@devvit/public-api": "^0.12.19",
+    "@devvit/web": "^0.12.19"
   },
   "devDependencies": {
-    "devvit": "^0.12.18",
+    "devvit": "^0.12.19",
     "dotenv-cli": "8.0.0",
     "typescript": "5.8.3"
   }

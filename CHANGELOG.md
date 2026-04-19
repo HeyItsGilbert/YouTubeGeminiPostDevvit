@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-04-18
+
+### Changed
+
+- Updated `@devvit/public-api`, `@devvit/web`, and `devvit` to
+  `^0.12.19`.
+
 ## [0.1.4] 2026-04-10
 
 ### Fixed
@@ -74,7 +81,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   queue to exercise the full moderation workflow.
 
 [Unreleased]:
-  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.4...HEAD
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.5...HEAD
+[0.1.5]:
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.4...v0.1.5
 [0.1.4]:
   https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.3...v0.1.4
 [0.1.3]:
