@@ -1,7 +1,9 @@
 {
   "extends": "@devvit/public-api/devvit.tsconfig.json",
   "compilerOptions": {
-    "types": []
+    "types": [],
+    "allowJs": false,
+    "checkJs": false
   },
-  "exclude": ["**/node_modules", "**/.*/", "preview-site"]
+  "exclude": ["**/node_modules", "**/.*/", "preview-site", "dist", "webroot"]
 }

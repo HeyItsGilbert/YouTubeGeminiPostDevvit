@@ -49,7 +49,7 @@ You are an automated release management assistant. Your job is to efficiently up
   - Push tags: `git push origin --tags`
 
 6. **Publish release**
-  - Run the devvit publish command to publish the release: `devvit publish --version X.Y.Z`
+  - Run the devvit publish command to publish the release: `devvit publish --version X.Y.Z --public`
 
 
 ## Standards

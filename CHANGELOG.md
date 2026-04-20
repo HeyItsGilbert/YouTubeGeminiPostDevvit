@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-04-20
+
+### Fixed
+
+- `devvit publish` now runs with `--public` so the app is visible in
+  the App Directory. Previous releases were published without this flag,
+  hiding the app from public discovery.
+- `tsconfig.json` now excludes `dist/`, `webroot/`, and disables
+  `allowJs`/`checkJs` to prevent devvit build artifacts from being
+  picked up as TypeScript inputs, fixing `TS5055` errors on
+  `npm run type-check`.
+
 ## [0.1.5] - 2026-04-18
 
 ### Changed
@@ -81,7 +93,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   queue to exercise the full moderation workflow.
 
 [Unreleased]:
-  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.5...HEAD
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.6...HEAD
+[0.1.6]:
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.5...v0.1.6
 [0.1.5]:
   https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.4...v0.1.5
 [0.1.4]:
