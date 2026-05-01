@@ -143,6 +143,7 @@ Devvit.addSettings([
 const REDIS_KEY_GOOGLE_API_KEY = 'google_api_key';
 const REDIS_KEY_PENDING_POST = 'pending_post';
 const REDIS_KEY_PENDING_POST_JOB_ID = 'pending_post_job_id';
+const REDIS_KEY_STICKY_SLOT = 'last_episode_sticky_slot';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -228,6 +229,50 @@ Devvit.addMenuItem({
   forUserType: 'moderator',
   onPress: (_event, context) => {
     context.ui.showForm(apiKeyForm);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Pin slot form — lets mods choose which sticky slot the bot uses
+// ---------------------------------------------------------------------------
+
+const pinSlotForm = Devvit.createForm(
+  (data: { [key: string]: any }) => ({
+    title: 'Set Pin Slot',
+    description: 'Choose which sticky slot the bot uses when pinning new episode posts.',
+    fields: [
+      {
+        type: 'number',
+        name: 'slot',
+        label: 'Sticky Slot (1 or 2)',
+        helpText: 'Reddit supports 2 sticky slots per subreddit. Use 1 for the top pin, 2 for the second.',
+        defaultValue: data.currentSlot as number,
+        required: true,
+      },
+    ],
+    acceptLabel: 'Save',
+    cancelLabel: 'Cancel',
+  }),
+  async ({ values }, context) => {
+    const slot = Number(values.slot);
+    if (![1, 2].includes(slot)) {
+      context.ui.showToast('Slot must be 1 or 2.');
+      return;
+    }
+    await context.redis.set(REDIS_KEY_STICKY_SLOT, String(slot));
+    context.ui.showToast(`Pin slot set to ${slot}.`);
+  }
+);
+
+Devvit.addMenuItem({
+  label: 'Set pin slot',
+  description: 'Choose which sticky slot (1 or 2) the bot uses for episode posts.',
+  location: 'subreddit',
+  forUserType: 'moderator',
+  onPress: async (_event, context) => {
+    const current = await context.redis.get(REDIS_KEY_STICKY_SLOT);
+    const currentSlot = parseInt(current ?? '1', 10);
+    context.ui.showForm(pinSlotForm, { currentSlot: [1, 2].includes(currentSlot) ? currentSlot : 1 });
   },
 });
 

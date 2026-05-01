@@ -2,6 +2,8 @@
 
 Guidance for AI agents and contributors working on this codebase.
 
+If any of these instructions change, update this doc. Always check if there is a new devvit version.
+
 ---
 
 ## What this app does
@@ -81,7 +83,9 @@ check_new_episodes job (src/main.ts)
   ├─ 8. applyFlair(...)           (if flairName set)            postManager.ts
   ├─ 9. applyBotFlair(...)        (if emoji or text set)        postManager.ts
   ├─ 10. managePins(reddit, redis, post.id)                     postManager.ts
-  │       Unpin previous (Redis `last_episode_post_id`), pin new post → slot 1
+  │       Read `last_episode_sticky_slot` (default 1), sticky new post into that
+  │       slot (Reddit atomically displaces the occupant — no explicit unsticky)
+  │       Write `last_episode_sticky_slot` back to Redis
   │
   └─ 11. Persist: setVideoRecord(redis, episode.guid, { status: 'posted', postId })
                   redis.set('last_episode_guid', episode.guid)   ← legacy compat
@@ -191,9 +195,9 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 | `updateEpisodePost(reddit, postId, body)` | Fetches post then calls `.edit({ text: body })` |
 | `applyBotFlair(reddit, subredditName, emoji, text)` | Sets author flair on the app's own account; skips if both emoji and text are empty |
 | `applyFlair(reddit, subredditName, postId, flairName)` | Case-insensitive flair template name match; logs error and continues if no match found |
-| `managePins(reddit, redis, newPostId)` | Unstickies `last_episode_post_id` (non-fatal if already gone), stickies new post to slot 1 (fatal if it throws) |
+| `managePins(reddit, redis, newPostId)` | Reads `last_episode_sticky_slot` from Redis (default: 1), calls `sticky(slot)` on the new post — Reddit atomically displaces the slot occupant so no explicit unsticky is needed. Writes `last_episode_sticky_slot` back to Redis. Fatal if `sticky()` throws. |
 
-**Pin slot:** Always uses sticky slot `1`. Reddit allows 2 sticky slots per subreddit. This bot does not manage slot 2.
+**Pin slot:** Defaults to slot `1` on first run. The slot is persisted in Redis under `last_episode_sticky_slot` and can be changed by mods via the "Set pin slot" mod menu item. Reddit supports 2 sticky slots per subreddit; `sticky(position)` accepts `1` or `2` and atomically replaces the occupant of that slot.
 
 ---
 
@@ -207,7 +211,7 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 - Registers the `check_new_episodes` scheduler job (the core pipeline)
 - Registers the `regenerate_latest_post` scheduler job
 - Registers the `AppInstall` trigger (schedules the cron, cancels any previous job first for idempotency)
-- Registers four mod menu items: "Set Google API Key", "Check for new videos", "Force post latest video (testing)", and "Regenerate latest post"
+- Registers five mod menu items: "Set Google API Key", "Set pin slot", "Check for new videos", "Force post latest video (testing)", and "Regenerate latest post"
 - Exports `default Devvit` (required by Devvit platform)
 
 ---
@@ -243,7 +247,8 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | `google_api_key` | string | `apiKeyForm` handler | `check_new_episodes`, `regenerate_latest_post` | Google API key for both YouTube and Gemini |
 | `video_registry` | hash | `check_new_episodes` (step 4, 11) | `check_new_episodes` (step 4) | Hash of videoId → `VideoRecord` JSON. Tracks every seen video with status `posted`, `excluded`, or `skipped`. |
 | `last_episode_guid` | string | `check_new_episodes` (step 11), `post_pending_episode` | `regenerate_latest_post` | Legacy: YouTube video ID of last posted video — kept for backwards compatibility |
-| `last_episode_post_id` | string | `check_new_episodes` (step 11), `post_pending_episode` | `managePins`, `regenerate_latest_post` | Reddit post ID of the currently pinned post |
+| `last_episode_post_id` | string | `check_new_episodes` (step 11), `post_pending_episode` | `regenerate_latest_post` | Reddit post ID of the currently pinned post |
+| `last_episode_sticky_slot` | string (`'1'`–`'2'`) | `managePins`, `pinSlotForm` handler | `managePins` | Sticky slot the bot uses for episode posts. Written by `managePins` after each successful pin, and directly by the "Set pin slot" mod menu form. Defaults to `1` if absent. |
 | `episode_checker_job_id` | string | `AppInstall` trigger | `AppInstall` trigger | Scheduler job ID, used to cancel and re-create on reinstall |
 | `force_repost` | string (`'1'`) | "Force post latest video" menu item | `check_new_episodes` (step 4a) | One-shot flag: skip registry check for the newest video on the next run. Deleted immediately when read. |
 | `check_triggered_by` | string | "Check for new videos" / "Force post" menu items | `check_new_episodes` error handler, `post_pending_episode` error handler | Username of the mod who manually triggered; used to send a PM on failure |
@@ -320,7 +325,7 @@ Use `Devvit.addMenuItem` in `src/main.ts`. For actions that take time, schedule 
 
 ### Change the pin rotation behavior
 
-`managePins` in `src/postManager.ts` always unstickies the stored `last_episode_post_id` and stickies the new post to slot 1. If you need slot 2 or conditional pinning, modify this function. Note that `managePins` does **not** write to Redis — the caller (`check_new_episodes`) writes `last_episode_post_id` after `managePins` returns.
+`managePins` in `src/postManager.ts` reads `last_episode_sticky_slot` from Redis (default `1`), calls `sticky(slot)` on the new post, and writes the slot back to Redis. Reddit's `sticky()` atomically displaces the existing occupant of that slot — no explicit `unsticky()` is needed. To change which slot is used at runtime, mods can use the "Set pin slot" mod menu item, which writes directly to `last_episode_sticky_slot`.
 
 ### Support multiple playlists
 
