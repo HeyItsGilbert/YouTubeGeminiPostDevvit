@@ -6,7 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.1.7] - 2026-04-20
+## [0.1.8] - 2026-05-01
+
+### Added
+
+- "Set pin slot" mod menu item lets moderators choose sticky slot
+  1 or 2 via a form. The selected slot is persisted in Redis under
+  `last_episode_sticky_slot` and used on every subsequent pin.
+- `build` script (`tsc -p src/tsconfig.json`) for one-shot
+  TypeScript compilation.
+- `watch` script (`tsc -p src/tsconfig.json --watch`) to
+  recompile JS files automatically on save, keeping the compiled
+  output in sync with the TypeScript source during development.
+
+### Fixed
+
+- `managePins` no longer calls `unsticky()` on the previously-tracked
+  post before pinning the new one. It now calls `sticky(slot)` which
+  atomically displaces the current occupant of that slot — preventing
+  a double-unpin that could silently remove a mod-pinned post
+  unrelated to the bot.
+
+### Changed
+
+- Pinned `@devvit/public-api`, `@devvit/web`, and `devvit` to
+  `0.12.22` (exact versions, no caret).
 
 ### Changed
 

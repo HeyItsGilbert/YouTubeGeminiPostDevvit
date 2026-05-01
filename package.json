@@ -1,10 +1,12 @@
 {
   "private": true,
   "name": "youtube-gemini",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "license": "BSD-3-Clause",
   "type": "module",
   "scripts": {
+    "build": "tsc -p src/tsconfig.json",
+    "watch": "tsc -p src/tsconfig.json --watch",
     "deploy": "devvit upload",
     "dev": "dotenv -e .env -- devvit playtest",
     "login": "devvit login",
@@ -12,11 +14,11 @@
     "type-check": "tsc --build"
   },
   "dependencies": {
-    "@devvit/public-api": "^0.12.20",
-    "@devvit/web": "^0.12.20"
+    "@devvit/public-api": "0.12.22",
+    "@devvit/web": "0.12.22"
   },
   "devDependencies": {
-    "devvit": "^0.12.20",
+    "devvit": "0.12.22",
     "dotenv-cli": "8.0.0",
     "typescript": "5.8.3"
   }

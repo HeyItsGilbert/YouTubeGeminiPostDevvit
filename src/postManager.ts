@@ -112,38 +112,35 @@ export async function applyFlair(
 // ----- Pin management -------------------------------------------------------
 
 /**
- * Unpin the previous post (if any) and pin the new one.
+ * Pin the new post, replacing the bot's previous sticky slot in-place.
  *
- * Reddit allows a maximum of 2 sticky posts. This bot uses slot 1.
- * The previous post ID is read from Redis key `last_episode_post_id`.
+ * Calls sticky(slot) on the new post — Reddit atomically displaces whatever
+ * is already in that slot, so no explicit unsticky() is needed. This ensures
+ * the bot never removes more than its own tracked slot.
+ *
+ * The slot used is persisted in Redis under `last_episode_sticky_slot` so
+ * future runs replace the same slot. Defaults to slot 1 on first run.
  */
 export async function managePins(
   reddit: RedditClient,
   redis: RedisClient,
   newPostId: string
 ): Promise<void> {
-  // Unpin the previous post
-  const previousPostId = await redis.get('last_episode_post_id');
-  if (previousPostId && previousPostId !== newPostId) {
-    try {
-      const prevPost = await reddit.getPostById(previousPostId);
-      await prevPost.unsticky();
-      console.log(`[postManager] Unpinned previous post: ${previousPostId}`);
-    } catch (err) {
-      // The post may have been deleted or already unstickied — non-fatal
-      console.error(
-        `[postManager] Could not unpin previous post ${previousPostId}: ${err}`
-      );
-    }
-  }
+  // Determine which slot the bot last used (default: 1)
+  const slotStr = await redis.get('last_episode_sticky_slot');
+  const slotNum = parseInt(slotStr ?? '1', 10);
+  const slot = ([1, 2].includes(slotNum) ? slotNum : 1) as 1 | 2;
 
-  // Pin the new post to sticky slot 1
+  // Sticky the new post into the same slot — Reddit replaces whatever was there
   try {
     const newPost = await reddit.getPostById(newPostId);
-    await newPost.sticky(1);
-    console.log(`[postManager] Pinned new post: ${newPostId}`);
+    await newPost.sticky(slot);
+    console.log(`[postManager] Pinned new post ${newPostId} to slot ${slot}`);
   } catch (err) {
     console.error(`[postManager] Failed to pin new post ${newPostId}: ${err}`);
     throw err; // rethrow — caller should know pinning failed
   }
+
+  // Persist the slot for the next run
+  await redis.set('last_episode_sticky_slot', String(slot));
 }
