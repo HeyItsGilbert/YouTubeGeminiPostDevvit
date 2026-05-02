@@ -7,6 +7,10 @@ preview-site/node_modules/
 preview-site/dist/
 preview-site/.env
 
+# Build output
+dist/
+webroot/
+
 .claude/settings.local.json
 preview-site/build/
 preview-site/coverage/
