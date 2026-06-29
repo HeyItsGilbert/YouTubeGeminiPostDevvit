@@ -4,7 +4,6 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { GoogleGenAI } from "@google/genai";
 import videoContentUrl from '../../assets/video-content.svg';
 import Markdown from 'react-markdown';
 import {
@@ -22,11 +21,10 @@ import {
   FileText,
   ChevronDown,
   ChevronUp,
-  MessageSquare,
   Layout,
   Filter
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, MotionConfig } from 'motion/react';
 import { EpisodeData, GeneratedPost } from '@shared/types';
 import { resolvePlaylistId, buildUserMessage, parseGeneratedResponse, assemblePostBody, applyPlaceholders, matchesExclusionFilter, isPrivateVideo } from '@shared/postUtils';
 
@@ -43,6 +41,10 @@ const MODELS = [
   { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
   { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
 ];
+
+// Shared field styling — visible focus ring (WCAG 2.4.7) + legible placeholder (WCAG 1.4.3).
+const FIELD_CLASS =
+  'w-full bg-white border border-ink/10 placeholder:text-ink/60 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-ink/40 focus:ring-offset-2 focus:ring-offset-white transition-all';
 
 // ---------------------------------------------------------------------------
 // API access checks — lightweight probes that consume no generation quota
@@ -83,15 +85,15 @@ function ApiStatusPill({ status, label, errorHref, errorLabel }: {
 }) {
   if (status === 'idle') return null;
   if (status === 'checking') return (
-    <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-1 rounded-full bg-[#141414]/5 text-[#141414]/40">
-      <RefreshCw size={10} className="animate-spin" />
-      {label}
+    <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-1 rounded-full bg-ink/5 text-ink/60">
+      <RefreshCw size={10} className="animate-spin" aria-hidden="true" />
+      {label} — checking
     </span>
   );
   if (status === 'ok') return (
     <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-1 rounded-full bg-emerald-50 text-emerald-700">
-      <Check size={10} />
-      {label}
+      <Check size={10} aria-hidden="true" />
+      {label} — connected
     </span>
   );
   return (
@@ -99,10 +101,10 @@ function ApiStatusPill({ status, label, errorHref, errorLabel }: {
       href={errorHref}
       target="_blank"
       rel="noopener noreferrer"
-      className="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-1 rounded-full bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
+      className="inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-1 rounded-full bg-red-50 text-red-600 hover:bg-red-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600/50 focus-visible:ring-offset-2 transition-colors"
     >
-      <AlertCircle size={10} />
-      {label} — {errorLabel} <ExternalLink size={9} />
+      <AlertCircle size={10} aria-hidden="true" />
+      {label} — {errorLabel} <ExternalLink size={9} aria-hidden="true" />
     </a>
   );
 }
@@ -258,6 +260,8 @@ export default function App() {
     const genStart = Date.now();
     const slowTimer = setTimeout(() => setSlowWarning(true), 25_000);
     try {
+      // Lazy-load the Gemini SDK so it stays out of the initial bundle.
+      const { GoogleGenAI } = await import('@google/genai');
       const ai = new GoogleGenAI({ apiKey });
 
       const response = await ai.models.generateContent({
@@ -302,15 +306,16 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#F5F5F0] text-[#141414] font-sans selection:bg-emerald-100">
+    <MotionConfig reducedMotion="user">
+    <div className="min-h-screen bg-paper text-ink font-sans selection:bg-emerald-100">
       {/* Header */}
-      <header className="border-b border-[#141414]/10 bg-white/80 backdrop-blur-md sticky top-0 z-10">
+      <header className="border-b border-ink/10 bg-white/80 backdrop-blur-md sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <img src={videoContentUrl} alt="" className="w-10 h-10 object-contain" />
             <div>
               <h1 className="font-bold text-lg tracking-tight">YouTube + Gemini Post: Post Preview</h1>
-              <p className="text-[10px] uppercase tracking-widest opacity-50 font-semibold">YouTube + Gemini Post Devvit App Companion</p>
+              <p className="text-[10px] uppercase tracking-widest opacity-70 font-semibold">YouTube + Gemini Post Devvit App Companion</p>
             </div>
           </div>
           <div className="flex items-center gap-4">
@@ -318,17 +323,17 @@ export default function App() {
               href="https://developers.reddit.com/apps/youtube-gemini"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs font-medium opacity-50 hover:opacity-100 transition-opacity flex items-center gap-1"
+              className="text-xs font-medium opacity-70 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 focus-visible:ring-offset-2 rounded transition-opacity flex items-center gap-1"
             >
-              Reddit App <ExternalLink size={12} />
+              Reddit App <ExternalLink size={12} aria-hidden="true" />
             </a>
             <a
               href="https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs font-medium opacity-50 hover:opacity-100 transition-opacity flex items-center gap-1"
+              className="text-xs font-medium opacity-70 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 focus-visible:ring-offset-2 rounded transition-opacity flex items-center gap-1"
             >
-              GitHub <ExternalLink size={12} />
+              GitHub <ExternalLink size={12} aria-hidden="true" />
             </a>
           </div>
         </div>
@@ -340,8 +345,8 @@ export default function App() {
           {/* Left Column: Configuration */}
           <div className="lg:col-span-5 space-y-8">
             <section className="space-y-6">
-              <div className="flex items-center gap-2 opacity-50">
-                <Settings size={16} />
+              <div className="flex items-center gap-2 opacity-70">
+                <Settings size={16} aria-hidden="true" />
                 <h2 className="text-xs font-bold uppercase tracking-widest">Configuration</h2>
               </div>
 
@@ -349,7 +354,7 @@ export default function App() {
                 {/* API Key */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <label className="text-xs font-semibold opacity-70 flex items-center gap-2">
+                    <label htmlFor="api-key" className="text-xs font-semibold opacity-70 flex items-center gap-2">
                       Google API Key
                       <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-bold">REQUIRED</span>
                     </label>
@@ -357,19 +362,20 @@ export default function App() {
                       href="https://aistudio.google.com/app/apikey"
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-[10px] font-bold text-blue-600 hover:underline flex items-center gap-1"
+                      className="text-[10px] font-bold text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600/50 focus-visible:ring-offset-2 rounded flex items-center gap-1"
                     >
-                      Get Key from AI Studio <ExternalLink size={10} />
+                      Get Key from AI Studio <ExternalLink size={10} aria-hidden="true" />
                     </a>
                   </div>
                   <input
+                    id="api-key"
                     type="password"
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
                     placeholder="Paste your Google API Key here..."
-                    className="w-full bg-white border border-[#141414]/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#141414]/5 transition-all"
+                    className={`${FIELD_CLASS} px-4 py-3`}
                   />
-                  <div className="flex gap-2 flex-wrap min-h-[22px]">
+                  <div className="flex gap-2 flex-wrap min-h-[22px]" role="status" aria-live="polite">
                     <ApiStatusPill
                       status={geminiStatus}
                       label="Gemini API"
@@ -387,27 +393,28 @@ export default function App() {
 
                 {/* Playlist ID */}
                 <div className="space-y-2">
-                  <label className="text-xs font-semibold opacity-70">YouTube Playlist ID</label>
+                  <label htmlFor="playlist-id" className="text-xs font-semibold opacity-70">YouTube Playlist ID</label>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
-                      <div className="absolute left-4 top-1/2 -translate-y-1/2 opacity-30">
-                        <ListVideo size={16} />
+                      <div className="absolute left-4 top-1/2 -translate-y-1/2 opacity-40 pointer-events-none">
+                        <ListVideo size={16} aria-hidden="true" />
                       </div>
                       <input
+                        id="playlist-id"
                         type="text"
                         value={playlistId}
                         onChange={(e) => setPlaylistId(e.target.value)}
                         placeholder="e.g. PL0WMaa8s_mXGb3089AMtiyvordHKAZKi9"
-                        className="w-full bg-white border border-[#141414]/10 rounded-xl pl-11 pr-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#141414]/5 transition-all"
+                        className={`${FIELD_CLASS} pl-11 pr-4 py-3`}
                       />
                     </div>
                     <button
                       onClick={loadPlaylistVideos}
                       disabled={isLoading || !apiKey || !playlistId}
-                      className="bg-[#141414] text-white rounded-xl px-4 py-3 hover:bg-[#141414]/90 transition-colors disabled:opacity-50"
-                      title="Load Videos"
+                      className="bg-ink text-white rounded-xl px-4 py-3 hover:bg-ink/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 focus-visible:ring-offset-2 transition-colors disabled:opacity-50"
+                      aria-label="Load videos from playlist"
                     >
-                      {isLoading ? <RefreshCw size={18} className="animate-spin" /> : <RefreshCw size={18} />}
+                      <RefreshCw size={18} className={isLoading ? 'animate-spin' : ''} aria-hidden="true" />
                     </button>
                   </div>
                 </div>
@@ -415,21 +422,22 @@ export default function App() {
                 {/* Exclude Title Keywords */}
                 {availableVideos.length > 0 && (
                   <div className="space-y-2">
-                    <label className="text-xs font-semibold opacity-70 flex items-center gap-2">
-                      <Filter size={12} />
+                    <label htmlFor="exclude-keywords" className="text-xs font-semibold opacity-70 flex items-center gap-2">
+                      <Filter size={12} aria-hidden="true" />
                       Exclude Title Keywords
                     </label>
                     <input
+                      id="exclude-keywords"
                       type="text"
                       value={excludeKeywords}
                       onChange={(e) => setExcludeKeywords(e.target.value)}
                       placeholder='e.g. "trailer, short, bonus"'
-                      className="w-full bg-white border border-[#141414]/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#141414]/5 transition-all"
+                      className={`${FIELD_CLASS} px-4 py-3`}
                     />
                     {excludeKeywords.trim() && (() => {
                       const excludedCount = availableVideos.filter(v => matchesExclusionFilter(v.title, excludeKeywords)).length;
                       return excludedCount > 0 ? (
-                        <p className="text-[10px] font-semibold text-amber-600">
+                        <p className="text-[10px] font-semibold text-amber-700">
                           {excludedCount} video{excludedCount !== 1 ? 's' : ''} would be excluded
                         </p>
                       ) : null;
@@ -440,107 +448,122 @@ export default function App() {
                 {/* Video Selection Dropdown */}
                 {availableVideos.length > 0 && (
                   <div className="space-y-2">
-                    <label className="text-xs font-semibold opacity-70">Select Video to Preview</label>
-                    <select
-                      value={selectedVideoId}
-                      onChange={(e) => setSelectedVideoId(e.target.value)}
-                      className="w-full bg-white border border-[#141414]/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#141414]/5 transition-all appearance-none cursor-pointer"
-                    >
-                      {availableVideos.map(v => {
-                        const excluded = matchesExclusionFilter(v.title, excludeKeywords);
-                        return (
-                          <option key={v.guid} value={v.guid}>
-                            {excluded ? '\u26D4 ' : ''}{v.title}
-                          </option>
-                        );
-                      })}
-                    </select>
+                    <label htmlFor="video-select" className="text-xs font-semibold opacity-70">Select Video to Preview</label>
+                    <div className="relative">
+                      <select
+                        id="video-select"
+                        value={selectedVideoId}
+                        onChange={(e) => setSelectedVideoId(e.target.value)}
+                        className={`${FIELD_CLASS} pl-4 pr-10 py-3 appearance-none cursor-pointer`}
+                      >
+                        {availableVideos.map(v => {
+                          const excluded = matchesExclusionFilter(v.title, excludeKeywords);
+                          return (
+                            <option key={v.guid} value={v.guid}>
+                              {excluded ? '⛔ ' : ''}{v.title}
+                            </option>
+                          );
+                        })}
+                      </select>
+                      <ChevronDown size={16} className="absolute right-4 top-1/2 -translate-y-1/2 opacity-40 pointer-events-none" aria-hidden="true" />
+                    </div>
                   </div>
                 )}
 
                 {/* Model Selection */}
                 <div className="space-y-2">
-                  <label className="text-xs font-semibold opacity-70">Gemini Model</label>
+                  <label htmlFor="model-select" className="text-xs font-semibold opacity-70">Gemini Model</label>
                   <div className="flex gap-2">
-                    <select
-                      value={selectedModel}
-                      onChange={(e) => setSelectedModel(e.target.value)}
-                      className="flex-1 bg-white border border-[#141414]/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#141414]/5 transition-all appearance-none cursor-pointer"
-                    >
-                      {MODELS.map(m => (
-                        <option key={m.id} value={m.id}>{m.name}</option>
-                      ))}
-                    </select>
+                    <div className="relative flex-1">
+                      <select
+                        id="model-select"
+                        value={selectedModel}
+                        onChange={(e) => setSelectedModel(e.target.value)}
+                        className={`${FIELD_CLASS} pl-4 pr-10 py-3 appearance-none cursor-pointer`}
+                      >
+                        {MODELS.map(m => (
+                          <option key={m.id} value={m.id}>{m.name}</option>
+                        ))}
+                      </select>
+                      <ChevronDown size={16} className="absolute right-4 top-1/2 -translate-y-1/2 opacity-40 pointer-events-none" aria-hidden="true" />
+                    </div>
                     <button
                       onClick={() => copyToClipboard(selectedModel, 'model')}
-                      className="bg-[#141414] text-white rounded-xl px-4 py-3 hover:bg-[#141414]/90 transition-colors flex items-center justify-center min-w-[48px]"
-                      title="Copy Model ID"
+                      className="bg-ink text-white rounded-xl px-4 py-3 hover:bg-ink/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 focus-visible:ring-offset-2 transition-colors flex items-center justify-center min-w-[48px]"
+                      aria-label="Copy model ID"
                     >
-                      {copied === 'model' ? <Check size={18} className="text-emerald-400" /> : <Copy size={18} />}
+                      {copied === 'model' ? <Check size={18} className="text-emerald-400" aria-hidden="true" /> : <Copy size={18} aria-hidden="true" />}
                     </button>
                   </div>
                 </div>
 
                 {/* System Prompt */}
                 <div className="space-y-2">
-                  <label className="text-xs font-semibold opacity-70">System Prompt</label>
+                  <label htmlFor="system-prompt" className="text-xs font-semibold opacity-70">System Prompt</label>
                   <textarea
+                    id="system-prompt"
                     value={systemPrompt}
                     onChange={(e) => setSystemPrompt(e.target.value)}
                     rows={6}
                     placeholder="Instructions for Gemini..."
-                    className="w-full bg-white border border-[#141414]/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#141414]/5 transition-all resize-none"
+                    className={`${FIELD_CLASS} px-4 py-3 resize-none`}
                   />
-                  <p className="text-[10px] opacity-40 italic">Placeholders: {'{Title}'}, {'{Description}'}, {'{Published}'}, {'{Link}'}, {'{EpisodeNumber}'}</p>
+                  <p className="text-[10px] opacity-60 italic">Placeholders: {'{Title}'}, {'{Description}'}, {'{Published}'}, {'{Link}'}, {'{EpisodeNumber}'}</p>
                 </div>
 
                 {/* Advanced Settings Toggle */}
-                <div className="pt-4 border-t border-[#141414]/5">
+                <div className="pt-4 border-t border-ink/5">
                   <button
                     onClick={() => setShowAdvanced(!showAdvanced)}
-                    className="flex items-center justify-between w-full text-[10px] font-bold uppercase tracking-widest opacity-50 hover:opacity-100 transition-opacity"
+                    aria-expanded={showAdvanced}
+                    aria-controls="advanced-settings"
+                    className="flex items-center justify-between w-full text-[10px] font-bold uppercase tracking-widest opacity-70 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 focus-visible:ring-offset-2 rounded transition-opacity"
                   >
                     Advanced Settings (Devvit Sync)
-                    {showAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                    {showAdvanced ? <ChevronUp size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}
                   </button>
 
                   <AnimatePresence>
                     {showAdvanced && (
                       <motion.div
+                        id="advanced-settings"
                         initial={{ height: 0, opacity: 0 }}
                         animate={{ height: 'auto', opacity: 1 }}
                         exit={{ height: 0, opacity: 0 }}
                         className="overflow-hidden space-y-4 pt-4"
                       >
                         <div className="space-y-2">
-                          <label className="text-[10px] font-bold uppercase tracking-widest opacity-50">Video Link Label</label>
+                          <label htmlFor="video-link-label" className="text-[10px] font-bold uppercase tracking-widest opacity-70">Video Link Label</label>
                           <input
+                            id="video-link-label"
                             type="text"
                             value={videoLinkLabel}
                             onChange={(e) => setVideoLinkLabel(e.target.value)}
-                            className="w-full bg-white border border-[#141414]/10 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#141414]/5 transition-all"
+                            className={`${FIELD_CLASS} px-4 py-2`}
                           />
-                          <p className="text-[10px] opacity-40 italic">Placeholders: {'{Title}'}, {'{EpisodeNumber}'}</p>
+                          <p className="text-[10px] opacity-60 italic">Placeholders: {'{Title}'}, {'{EpisodeNumber}'}</p>
                         </div>
                         <div className="space-y-2">
-                          <label className="text-[10px] font-bold uppercase tracking-widest opacity-50">Prepend Text</label>
+                          <label htmlFor="prepend-text" className="text-[10px] font-bold uppercase tracking-widest opacity-70">Prepend Text</label>
                           <textarea
+                            id="prepend-text"
                             value={prependText}
                             onChange={(e) => setPrependText(e.target.value)}
                             rows={2}
-                            className="w-full bg-white border border-[#141414]/10 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#141414]/5 transition-all resize-none"
+                            className={`${FIELD_CLASS} px-4 py-2 resize-none`}
                           />
-                          <p className="text-[10px] opacity-40 italic">Placeholders: {'{Title}'}, {'{Published}'}, {'{Link}'}, {'{EpisodeNumber}'}</p>
+                          <p className="text-[10px] opacity-60 italic">Placeholders: {'{Title}'}, {'{Published}'}, {'{Link}'}, {'{EpisodeNumber}'}</p>
                         </div>
                         <div className="space-y-2">
-                          <label className="text-[10px] font-bold uppercase tracking-widest opacity-50">Append Text</label>
+                          <label htmlFor="append-text" className="text-[10px] font-bold uppercase tracking-widest opacity-70">Append Text</label>
                           <textarea
+                            id="append-text"
                             value={appendText}
                             onChange={(e) => setAppendText(e.target.value)}
                             rows={2}
-                            className="w-full bg-white border border-[#141414]/10 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#141414]/5 transition-all resize-none"
+                            className={`${FIELD_CLASS} px-4 py-2 resize-none`}
                           />
-                          <p className="text-[10px] opacity-40 italic">Placeholders: {'{Title}'}, {'{Published}'}, {'{Link}'}, {'{EpisodeNumber}'}</p>
+                          <p className="text-[10px] opacity-60 italic">Placeholders: {'{Title}'}, {'{Published}'}, {'{Link}'}, {'{EpisodeNumber}'}</p>
                         </div>
                       </motion.div>
                     )}
@@ -550,12 +573,12 @@ export default function App() {
                 <button
                   onClick={generatePreview}
                   disabled={isGenerating || !selectedVideoId}
-                  className="w-full bg-[#141414] text-white rounded-xl py-4 font-bold text-sm flex items-center justify-center gap-2 hover:bg-[#141414]/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full bg-ink text-white rounded-xl py-4 font-bold text-sm flex items-center justify-center gap-2 hover:bg-ink/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 focus-visible:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {isGenerating ? (
-                    <RefreshCw size={18} className="animate-spin" />
+                    <RefreshCw size={18} className="animate-spin" aria-hidden="true" />
                   ) : (
-                    <Sparkles size={18} />
+                    <Sparkles size={18} aria-hidden="true" />
                   )}
                   {isGenerating ? 'Generating...' : 'Generate Preview'}
                 </button>
@@ -564,9 +587,10 @@ export default function App() {
                   <motion.div
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
+                    role="alert"
                     className="bg-red-50 border border-red-100 text-red-600 p-4 rounded-xl flex items-start gap-3"
                   >
-                    <AlertCircle size={18} className="shrink-0 mt-0.5" />
+                    <AlertCircle size={18} className="shrink-0 mt-0.5" aria-hidden="true" />
                     <p className="text-xs font-medium leading-relaxed">{error}</p>
                   </motion.div>
                 )}
@@ -576,8 +600,8 @@ export default function App() {
 
           {/* Right Column: Preview */}
           <div className="lg:col-span-7 space-y-8">
-            <div className="flex items-center gap-2 opacity-50">
-              <Eye size={16} />
+            <div className="flex items-center gap-2 opacity-70">
+              <Eye size={16} aria-hidden="true" />
               <h2 className="text-xs font-bold uppercase tracking-widest">Preview Output</h2>
             </div>
 
@@ -588,14 +612,14 @@ export default function App() {
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
-                  className="h-[600px] border-2 border-dashed border-[#141414]/5 rounded-3xl flex flex-col items-center justify-center text-center p-12 space-y-4"
+                  className="h-[600px] border-2 border-dashed border-ink/10 rounded-3xl flex flex-col items-center justify-center text-center p-12 space-y-4"
                 >
-                  <div className="w-16 h-16 bg-[#141414]/5 rounded-full flex items-center justify-center text-[#141414]/20">
-                    <Play size={32} />
+                  <div className="w-16 h-16 bg-ink/5 rounded-full flex items-center justify-center text-ink/30">
+                    <Play size={32} aria-hidden="true" />
                   </div>
                   <div className="space-y-1">
                     <h3 className="font-bold">No Preview Generated</h3>
-                    <p className="text-sm opacity-40 max-w-xs">Load videos from your playlist, select one, and click "Generate Preview".</p>
+                    <p className="text-sm opacity-60 max-w-xs">Load videos from your playlist, select one, and click "Generate Preview".</p>
                   </div>
                 </motion.div>
               )}
@@ -606,17 +630,17 @@ export default function App() {
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
-                  className="h-[600px] bg-white border border-[#141414]/5 rounded-3xl flex flex-col items-center justify-center text-center p-12 space-y-6"
+                  className="h-[600px] bg-white border border-ink/10 rounded-3xl flex flex-col items-center justify-center text-center p-12 space-y-6"
                 >
                   <div className="relative">
-                    <div className="w-20 h-20 border-4 border-[#141414]/5 border-t-[#141414] rounded-full animate-spin" />
+                    <div className="w-20 h-20 border-4 border-ink/10 border-t-ink rounded-full animate-spin" aria-hidden="true" />
                     <div className="absolute inset-0 flex items-center justify-center">
-                      <Sparkles size={24} className="text-[#141414]" />
+                      <Sparkles size={24} className="text-ink" aria-hidden="true" />
                     </div>
                   </div>
                   <div className="space-y-2">
                     <h3 className="font-bold text-xl">Generating Post...</h3>
-                    <p className="text-sm opacity-40">Consulting Gemini for the selected video.</p>
+                    <p className="text-sm opacity-60">Consulting Gemini for the selected video.</p>
                   </div>
                   <AnimatePresence>
                     {slowWarning && (
@@ -624,9 +648,10 @@ export default function App() {
                         initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0 }}
+                        role="status"
                         className="bg-amber-50 border border-amber-200 text-amber-700 px-5 py-3 rounded-xl flex items-start gap-3 text-left max-w-sm"
                       >
-                        <AlertCircle size={16} className="shrink-0 mt-0.5" />
+                        <AlertCircle size={16} className="shrink-0 mt-0.5" aria-hidden="true" />
                         <p className="text-xs font-medium leading-relaxed">
                           This is taking close to 30 seconds. Devvit enforces a
                           30s HTTP timeout — your live bot may time out with
@@ -650,9 +675,10 @@ export default function App() {
                     <motion.div
                       initial={{ opacity: 0, y: -8 }}
                       animate={{ opacity: 1, y: 0 }}
+                      role="status"
                       className="bg-amber-50 border border-amber-200 text-amber-700 p-4 rounded-xl flex items-start gap-3"
                     >
-                      <AlertCircle size={16} className="shrink-0 mt-0.5" />
+                      <AlertCircle size={16} className="shrink-0 mt-0.5" aria-hidden="true" />
                       <p className="text-xs font-medium leading-relaxed">
                         Generation took{' '}
                         <span className="font-bold">{(generationElapsedMs / 1000).toFixed(1)}s</span>
@@ -664,13 +690,13 @@ export default function App() {
                   )}
 
                   {/* Fetched Video Card */}
-                  <div className="bg-white border border-[#141414]/5 rounded-3xl p-8 space-y-6">
+                  <div className="bg-white border border-ink/10 rounded-3xl p-8 space-y-6">
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-emerald-600">
-                        <Check size={16} />
+                      <div className="flex items-center gap-2 text-emerald-700">
+                        <Check size={16} aria-hidden="true" />
                         <span className="text-[10px] font-bold uppercase tracking-widest">Video Selected</span>
                       </div>
-                      <span className="text-[10px] opacity-40 font-mono">{new Date(fetchedVideo.pubDate).toLocaleDateString()}</span>
+                      <span className="text-[10px] opacity-60 font-mono">{new Date(fetchedVideo.pubDate).toLocaleDateString()}</span>
                     </div>
 
                     <div className="space-y-2">
@@ -679,14 +705,14 @@ export default function App() {
                         href={fetchedVideo.link}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                        className="text-xs text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600/50 focus-visible:ring-offset-2 rounded flex items-center gap-1"
                       >
-                        {fetchedVideo.link} <ExternalLink size={10} />
+                        {fetchedVideo.link} <ExternalLink size={10} aria-hidden="true" />
                       </a>
                     </div>
 
-                    <div className="bg-[#F5F5F0] rounded-xl p-4">
-                      <p className="text-xs opacity-60 line-clamp-3 leading-relaxed">
+                    <div className="bg-paper rounded-xl p-4">
+                      <p className="text-xs opacity-70 line-clamp-3 leading-relaxed">
                         {fetchedVideo.description}
                       </p>
                     </div>
@@ -694,22 +720,24 @@ export default function App() {
 
                   {/* Generated Post Card */}
                   {generatedPost && (
-                    <div className="bg-[#141414] text-white rounded-3xl p-8 space-y-8 shadow-2xl shadow-[#141414]/20">
+                    <div className="bg-ink text-white rounded-3xl p-8 space-y-8 shadow-lg shadow-ink/10">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2 text-emerald-400">
-                          <Sparkles size={16} />
+                          <Sparkles size={16} aria-hidden="true" />
                           <span className="text-[10px] font-bold uppercase tracking-widest">Gemini Output</span>
                         </div>
-                        <div className="flex items-center gap-2 bg-white/5 rounded-lg p-1">
+                        <div className="flex items-center gap-2 bg-white/5 rounded-lg p-1" role="group" aria-label="Preview mode">
                           <button
                             onClick={() => setPreviewMode('reddit')}
-                            className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded-md transition-all ${previewMode === 'reddit' ? 'bg-white text-[#141414]' : 'opacity-40 hover:opacity-100'}`}
+                            aria-pressed={previewMode === 'reddit'}
+                            className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 transition-all ${previewMode === 'reddit' ? 'bg-white text-ink' : 'opacity-70 hover:opacity-100'}`}
                           >
                             Reddit View
                           </button>
                           <button
                             onClick={() => setPreviewMode('raw')}
-                            className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded-md transition-all ${previewMode === 'raw' ? 'bg-white text-[#141414]' : 'opacity-40 hover:opacity-100'}`}
+                            aria-pressed={previewMode === 'raw'}
+                            className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 transition-all ${previewMode === 'raw' ? 'bg-white text-ink' : 'opacity-70 hover:opacity-100'}`}
                           >
                             Raw Markdown
                           </button>
@@ -719,15 +747,16 @@ export default function App() {
                       {/* Title Preview */}
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2 opacity-50">
-                            <TypeIcon size={14} />
+                          <div className="flex items-center gap-2 opacity-70">
+                            <TypeIcon size={14} aria-hidden="true" />
                             <span className="text-[10px] font-bold uppercase tracking-widest">Reddit Title</span>
                           </div>
                           <button
                             onClick={() => copyToClipboard(generatedPost.title, 'title')}
-                            className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                            aria-label="Copy title"
+                            className="p-2 hover:bg-white/10 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 transition-colors"
                           >
-                            {copied === 'title' ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                            {copied === 'title' ? <Check size={14} className="text-emerald-400" aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
                           </button>
                         </div>
                         <div className="text-xl font-bold leading-tight bg-white/5 p-4 rounded-xl border border-white/10">
@@ -738,28 +767,29 @@ export default function App() {
                       {/* Body Preview */}
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2 opacity-50">
-                            {previewMode === 'reddit' ? <Layout size={14} /> : <FileText size={14} />}
+                          <div className="flex items-center gap-2 opacity-70">
+                            {previewMode === 'reddit' ? <Layout size={14} aria-hidden="true" /> : <FileText size={14} aria-hidden="true" />}
                             <span className="text-[10px] font-bold uppercase tracking-widest">
                               {previewMode === 'reddit' ? 'Reddit Post Body' : 'Reddit Body (Markdown)'}
                             </span>
                           </div>
                           <button
                             onClick={() => copyToClipboard(generatedPost.body, 'body')}
-                            className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                            aria-label="Copy body"
+                            className="p-2 hover:bg-white/10 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 transition-colors"
                           >
-                            {copied === 'body' ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                            {copied === 'body' ? <Check size={14} className="text-emerald-400" aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
                           </button>
                         </div>
 
                         {previewMode === 'reddit' ? (
-                          <div className="bg-white text-[#1c1c1c] p-6 rounded-xl border border-white/10 min-h-[200px]">
+                          <div className="bg-white text-ink-soft p-6 rounded-xl border border-white/10 min-h-[200px]">
                             <div className="prose prose-sm max-w-none prose-slate">
                               <Markdown>{generatedPost.body}</Markdown>
                             </div>
                           </div>
                         ) : (
-                          <div className="text-sm opacity-90 leading-relaxed bg-white/5 p-6 rounded-xl border border-white/10 font-mono whitespace-pre-wrap max-h-[400px] overflow-y-auto custom-scrollbar">
+                          <div className="text-sm opacity-90 leading-relaxed bg-white/5 p-6 rounded-xl border border-white/10 font-mono whitespace-pre-wrap max-h-[400px] overflow-y-auto">
                             {generatedPost.body}
                           </div>
                         )}
@@ -773,34 +803,17 @@ export default function App() {
         </div>
       </main>
 
-      <footer className="max-w-5xl mx-auto px-6 py-12 border-t border-[#141414]/5">
-        <div className="flex flex-col md:flex-row items-center justify-between gap-6 opacity-40">
+      <footer className="max-w-5xl mx-auto px-6 py-12 border-t border-ink/5">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-6 opacity-60">
           <p className="text-[10px] font-medium uppercase tracking-widest">Built by HeyItsGilbert • 2026</p>
           <div className="flex items-center gap-8">
-            <a href="https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit#readme" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-widest hover:opacity-100 transition-opacity">Documentation</a>
-            <a href="https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/blob/main/PRIVACY_POLICY.md" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-widest hover:opacity-100 transition-opacity">Privacy</a>
-            <a href="https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/issues" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-widest hover:opacity-100 transition-opacity">Support</a>
+            <a href="https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit#readme" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-widest hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 focus-visible:ring-offset-2 rounded transition-opacity">Documentation</a>
+            <a href="https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/blob/main/PRIVACY_POLICY.md" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-widest hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 focus-visible:ring-offset-2 rounded transition-opacity">Privacy</a>
+            <a href="https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/issues" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-widest hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 focus-visible:ring-offset-2 rounded transition-opacity">Support</a>
           </div>
         </div>
       </footer>
-
-      <style dangerouslySetInnerHTML={{
-        __html: `
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 6px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: rgba(255, 255, 255, 0.05);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(255, 255, 255, 0.1);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: rgba(255, 255, 255, 0.2);
-        }
-      `}} />
     </div>
+    </MotionConfig>
   );
 }
