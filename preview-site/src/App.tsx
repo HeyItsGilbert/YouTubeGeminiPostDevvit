@@ -8,7 +8,7 @@ import { GoogleGenAI } from "@google/genai";
 import videoContentUrl from '../../assets/video-content.svg';
 import Markdown from 'react-markdown';
 import {
-  Youtube,
+  ListVideo,
   Sparkles,
   Settings,
   Play,
@@ -391,7 +391,7 @@ export default function App() {
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <div className="absolute left-4 top-1/2 -translate-y-1/2 opacity-30">
-                        <Youtube size={16} />
+                        <ListVideo size={16} />
                       </div>
                       <input
                         type="text"
