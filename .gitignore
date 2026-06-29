@@ -6,6 +6,11 @@ src/**/*.js
 preview-site/node_modules/
 preview-site/dist/
 preview-site/.env
+preview-site/src/**/*.js
+preview-site/vite.config.js
+
+# TypeScript incremental build cache
+*.tsbuildinfo
 
 # Build output
 dist/
