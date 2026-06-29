@@ -1,1 +1,9 @@
 @import "tailwindcss";
+
+/* Design tokens — see DESIGN.md (single source of truth for the neutral ramp).
+   Status colors use Tailwind's built-in emerald/red/amber/blue scales. */
+@theme {
+  --color-paper: #f5f5f0;
+  --color-ink: #141414;
+  --color-ink-soft: #1c1c1c;
+}
