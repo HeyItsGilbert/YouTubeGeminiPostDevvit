@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-29T00:00:00.000Z",
+  "title": "Design System: YouTube + Gemini Post — Preview",
+  "extensions": {
+    "colorMeta": {
+      "paper": { "role": "neutral", "displayName": "Warm Paper", "canonical": "oklch(96.5% 0.004 95)", "tonalRamp": ["oklch(20% 0.004 95)", "oklch(30% 0.004 95)", "oklch(42% 0.004 95)", "oklch(55% 0.004 95)", "oklch(68% 0.004 95)", "oklch(80% 0.004 95)", "oklch(90% 0.004 95)", "oklch(96.5% 0.004 95)"] },
+      "ink": { "role": "primary", "displayName": "Near-Black Ink", "canonical": "oklch(20% 0 0)", "tonalRamp": ["oklch(15% 0 0)", "oklch(20% 0 0)", "oklch(30% 0 0)", "oklch(42% 0 0)", "oklch(55% 0 0)", "oklch(68% 0 0)", "oklch(82% 0 0)", "oklch(94% 0 0)"] },
+      "success": { "role": "tertiary", "displayName": "Confirmation Green", "canonical": "oklch(54% 0.12 160)", "tonalRamp": ["oklch(25% 0.06 160)", "oklch(33% 0.08 160)", "oklch(42% 0.10 160)", "oklch(54% 0.12 160)", "oklch(66% 0.12 160)", "oklch(78% 0.09 160)", "oklch(90% 0.05 160)", "oklch(97% 0.02 160)"] },
+      "link": { "role": "secondary", "displayName": "Console Blue", "canonical": "oklch(55% 0.21 264)", "tonalRamp": ["oklch(28% 0.10 264)", "oklch(36% 0.14 264)", "oklch(45% 0.18 264)", "oklch(55% 0.21 264)", "oklch(66% 0.18 264)", "oklch(78% 0.12 264)", "oklch(89% 0.06 264)", "oklch(96% 0.03 264)"] },
+      "danger": { "role": "tertiary", "displayName": "Error Red", "canonical": "oklch(58% 0.22 27)", "tonalRamp": ["oklch(28% 0.10 27)", "oklch(37% 0.14 27)", "oklch(47% 0.19 27)", "oklch(58% 0.22 27)", "oklch(68% 0.19 27)", "oklch(80% 0.12 27)", "oklch(90% 0.06 27)", "oklch(97% 0.02 27)"] },
+      "warning": { "role": "tertiary", "displayName": "Working Amber", "canonical": "oklch(55% 0.13 70)", "tonalRamp": ["oklch(28% 0.07 70)", "oklch(37% 0.09 70)", "oklch(46% 0.11 70)", "oklch(55% 0.13 70)", "oklch(68% 0.13 70)", "oklch(80% 0.10 70)", "oklch(91% 0.05 70)", "oklch(97% 0.02 70)"] }
+    },
+    "typographyMeta": {
+      "title": { "displayName": "Title", "purpose": "App name in the header; the largest type on the page, deliberately modest." },
+      "eyebrow": { "displayName": "Eyebrow", "purpose": "Functional section dividers inside the config form — one per real panel only." },
+      "body": { "displayName": "Body", "purpose": "Input values, help text, generated content. Cap prose at 65–75ch." },
+      "label": { "displayName": "Label", "purpose": "Field labels, usually at ink/70." },
+      "micro": { "displayName": "Micro", "purpose": "Status pills, badges, inline metadata." }
+    },
+    "shadows": [
+      { "name": "header-float", "value": "backdrop-filter: blur(12px); background: rgba(255,255,255,0.8)", "purpose": "The only persistent elevation; separates the sticky header from scrolling content." },
+      { "name": "pill-lift", "value": "0 1px 2px rgba(0,0,0,0.12)", "purpose": "Lifts a dark status chip (e.g. the model pill) off the dark text around it." }
+    ],
+    "motion": [
+      { "name": "spin", "value": "animation: spin 1s linear infinite", "purpose": "Loading spinners (RefreshCw) during API checks and generation." },
+      { "name": "state-transition", "value": "transition: all 0.15s ease", "purpose": "Hover/focus/active feedback on buttons, links, and inputs (150–250ms)." }
+    ],
+    "breakpoints": [
+      { "name": "lg", "value": "1024px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Committing actions (Fetch, Generate). Ink fill, white text, soft 12px corners.",
+      "html": "<button class=\"ds-btn-primary\">Generate Post</button>",
+      "css": ".ds-btn-primary { background: #141414; color: #FFFFFF; font: 600 0.875rem ui-sans-serif, system-ui, sans-serif; padding: 12px 16px; border: none; border-radius: 12px; cursor: pointer; transition: background 0.15s ease, transform 0.15s ease; } .ds-btn-primary:hover { background: #1C1C1C; } .ds-btn-primary:focus-visible { outline: 2px solid #141414; outline-offset: 2px; } .ds-btn-primary:active { transform: translateY(1px); }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Standard configuration field: white surface, hairline ink border, soft corners.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Paste your Google API Key here…\" />",
+      "css": ".ds-input { width: 100%; background: #FFFFFF; color: #141414; font: 400 0.875rem ui-sans-serif, system-ui, sans-serif; padding: 12px 16px; border: 1px solid rgba(20,20,20,0.10); border-radius: 12px; transition: box-shadow 0.15s ease, border-color 0.15s ease; } .ds-input::placeholder { color: rgba(20,20,20,0.55); } .ds-input:focus-visible { outline: none; border-color: rgba(20,20,20,0.30); box-shadow: 0 0 0 3px rgba(20,20,20,0.08); }"
+    },
+    {
+      "name": "Success Status Pill",
+      "kind": "chip",
+      "refersTo": "pill-success",
+      "description": "Confirms API access. Color paired with a check icon and label — never color alone.",
+      "html": "<span class=\"ds-pill-success\"><svg viewBox=\"0 0 24 24\" width=\"12\" height=\"12\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20 6 9 17l-5-5\"/></svg>Gemini API</span>",
+      "css": ".ds-pill-success { display: inline-flex; align-items: center; gap: 6px; background: #ECFDF5; color: #047857; font: 600 0.625rem ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.05em; padding: 4px 8px; border-radius: 9999px; }"
+    },
+    {
+      "name": "Danger Status Pill",
+      "kind": "chip",
+      "refersTo": "pill-danger",
+      "description": "Reports a failed access check and links to the fix. Hover deepens the tint.",
+      "html": "<a class=\"ds-pill-danger\" href=\"#\"><svg viewBox=\"0 0 24 24\" width=\"12\" height=\"12\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 8v4M12 16h.01\"/></svg>YouTube API — Enable</a>",
+      "css": ".ds-pill-danger { display: inline-flex; align-items: center; gap: 6px; background: #FEF2F2; color: #DC2626; font: 600 0.625rem ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.05em; padding: 4px 8px; border-radius: 9999px; text-decoration: none; transition: background 0.15s ease; } .ds-pill-danger:hover { background: #FEE2E2; } .ds-pill-danger:focus-visible { outline: 2px solid #DC2626; outline-offset: 2px; }"
+    },
+    {
+      "name": "Required Badge",
+      "kind": "chip",
+      "refersTo": "badge-required",
+      "description": "Marks a required field beside its label.",
+      "html": "<span class=\"ds-badge-required\">REQUIRED</span>",
+      "css": ".ds-badge-required { display: inline-block; background: #ECFDF5; color: #047857; font: 700 0.625rem ui-sans-serif, system-ui, sans-serif; padding: 2px 6px; border-radius: 4px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Proof Sheet",
+    "overview": "This is the contact sheet you hold up to the light before you commit to a print. A moderator comes here not to be impressed but to check their work: paste a key, point at a playlist, tune the prompt, and read the exact post the bot will publish. Everything serves that single act of verification — warm paper canvas, clean white cards, and the only saturated colors in the room are the ones that report a fact. The personality is quiet, trustworthy, precise: a well-made instrument, legible at a glance and unsurprising in how its controls behave. It explicitly rejects the marketing-SaaS reflex — no gradient hero, no clamp display type, no scroll choreography. The one place the rules relax is the Reddit preview pane, which mimics Reddit's own surface so the proof reads true to destination.",
+    "keyCharacteristics": [
+      "Warm-paper canvas, white content surfaces, near-black ink.",
+      "Color is reserved exclusively for status (success / danger / warning / link).",
+      "One neutral system sans, multiple weights — no font pairing.",
+      "Comfortable two-column workspace; chrome recedes, content leads.",
+      "Quiet motion: state feedback and spinners only, never decoration."
+    ],
+    "rules": [
+      { "name": "The Status-Only Color Rule", "body": "Saturated color is forbidden as decoration. If a green, red, amber, or blue pixel appears on screen, it must report a verifiable state. Emphasis without meaning comes from weight, size, or an Ink opacity tier — never a hue.", "section": "colors" },
+      { "name": "The Weight-Not-Face Rule", "body": "Never introduce a second font family. New emphasis comes from 400 → 600 → 700 and from case, never from a display or serif face.", "section": "typography" },
+      { "name": "The Functional-Eyebrow Exception", "body": "The tiny-uppercase-tracked eyebrow earns its place only as a genuine functional section divider inside the dense config form (one per real panel). Do not multiply it.", "section": "typography" },
+      { "name": "The Flat-By-Default Rule", "body": "Surfaces rest flat. If you're reaching for a drop-shadow on a card, use the paper/white tonal step or a 1px ink/10 border instead.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do keep color reserved for status — green/red/amber/blue must each report a verifiable fact.",
+      "Do build hierarchy from weight, size, and case in the single system sans.",
+      "Do verify every muted text tier hits WCAG 2.1 AA: body ink/70 and ink/50 must clear 4.5:1, large text 3:1, placeholders 4.5:1.",
+      "Do give every interactive control a clearly visible :focus-visible ring.",
+      "Do pair every status color with an icon and text, so meaning survives color blindness and grayscale.",
+      "Do provide a prefers-reduced-motion: reduce fallback for every motion/react animation.",
+      "Do let the Reddit preview pane look like Reddit — fidelity to destination beats house style there."
+    ],
+    "donts": [
+      "Don't add a gradient hero, oversized clamp display type, scroll choreography, or the hero-metric template.",
+      "Don't introduce a second font family or any serif/display face.",
+      "Don't use saturated color decoratively, or rely on color alone to signal state.",
+      "Don't ship the faint ink/5 focus ring as the only focus affordance — it fails keyboard users.",
+      "Don't scatter the uppercase-tracked eyebrow as decoration; one functional divider per real panel.",
+      "Don't add drop-shadows to cards to fake depth — use the paper/white tonal step or a 1px ink/10 border.",
+      "Don't add custom scrollbars, reinvented form controls, glassmorphism-for-show, or motion that conveys no state."
+    ]
+  }
+}
