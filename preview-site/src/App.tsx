@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import videoContentUrl from '../../assets/video-content.svg';
 import Markdown from 'react-markdown';
 import {
@@ -33,7 +33,10 @@ The first line of your output should be a catchy, relevant title for the Reddit 
 The rest of your output should be the body of the post, including a summary of the episode and some discussion prompts.
 Be engaging and use Markdown formatting.`;
 
-const MODELS = [
+type ModelOption = { id: string; name: string };
+
+// Fallback list — used until a key loads the live model list, or if that fetch fails.
+const FALLBACK_MODELS: ModelOption[] = [
   { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Latest)' },
   { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash-Lite' },
   { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (Advanced)' },
@@ -41,6 +44,19 @@ const MODELS = [
   { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
   { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
 ];
+
+// The API exposes no speed or price field, so we derive a relative tier from the
+// model id. Lower rank = faster/cheaper, so it sorts first and gets recommended.
+// `cost` is a relative indicator ($–$$$), not an absolute price.
+type ModelTier = { rank: number; speed: string; cost: string };
+
+function classifyModel(id: string): ModelTier {
+  const lower = id.toLowerCase();
+  if (lower.includes('flash-lite') || lower.includes('lite')) return { rank: 0, speed: 'Fastest', cost: '$' };
+  if (lower.includes('flash')) return { rank: 1, speed: 'Fast', cost: '$$' };
+  if (lower.includes('pro')) return { rank: 3, speed: 'Slower', cost: '$$$' };
+  return { rank: 2, speed: '', cost: '$$' };
+}
 
 // Shared field styling — visible focus ring (WCAG 2.4.7) + legible placeholder (WCAG 1.4.3).
 const FIELD_CLASS =
@@ -52,15 +68,25 @@ const FIELD_CLASS =
 
 type ApiStatus = 'idle' | 'checking' | 'ok' | 'error';
 
-async function checkGeminiAccess(apiKey: string, signal: AbortSignal): Promise<boolean> {
+// Doubles as the Gemini access check: a non-null result means the key works.
+// Filters to chat models that support generateContent so the dropdown stays clean.
+async function fetchGeminiModels(apiKey: string, signal: AbortSignal): Promise<ModelOption[] | null> {
   try {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
       { signal }
     );
-    return res.ok;
+    if (!res.ok) return null;
+    const data = await res.json();
+    const models: ModelOption[] = (data.models ?? [])
+      .filter((m: any) =>
+        m.supportedGenerationMethods?.includes('generateContent') &&
+        String(m.name).startsWith('models/gemini')
+      )
+      .map((m: any) => ({ id: String(m.name).replace(/^models\//, ''), name: m.displayName || m.name }));
+    return models.length ? models : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -133,6 +159,8 @@ export default function App() {
   const [fetchedVideo, setFetchedVideo] = useState<EpisodeData | null>(null);
   const [generatedPost, setGeneratedPost] = useState<GeneratedPost | null>(null);
   const [copied, setCopied] = useState<'title' | 'body' | 'model' | null>(null);
+  const [availableModels, setAvailableModels] = useState<ModelOption[]>(FALLBACK_MODELS);
+  const [modelsAreLive, setModelsAreLive] = useState(false);
   const [geminiStatus, setGeminiStatus] = useState<ApiStatus>('idle');
   const [youtubeStatus, setYoutubeStatus] = useState<ApiStatus>('idle');
   const [slowWarning, setSlowWarning] = useState(false);
@@ -155,19 +183,23 @@ export default function App() {
     if (!apiKey || apiKey.length < 20) {
       setGeminiStatus('idle');
       setYoutubeStatus('idle');
+      setAvailableModels(FALLBACK_MODELS);
+      setModelsAreLive(false);
       return;
     }
     setGeminiStatus('checking');
     setYoutubeStatus('checking');
     const controller = new AbortController();
     const timer = setTimeout(async () => {
-      const [gemini, youtube] = await Promise.all([
-        checkGeminiAccess(apiKey, controller.signal),
+      const [models, youtube] = await Promise.all([
+        fetchGeminiModels(apiKey, controller.signal),
         checkYouTubeAccess(apiKey, controller.signal),
       ]);
       if (!controller.signal.aborted) {
-        setGeminiStatus(gemini ? 'ok' : 'error');
+        setGeminiStatus(models ? 'ok' : 'error');
         setYoutubeStatus(youtube ? 'ok' : 'error');
+        setAvailableModels(models ?? FALLBACK_MODELS);
+        setModelsAreLive(Boolean(models));
       }
     }, 800);
     return () => {
@@ -175,6 +207,17 @@ export default function App() {
       controller.abort();
     };
   }, [apiKey]);
+
+  // Sort fastest/cheapest first so the recommended model leads the dropdown.
+  // Keep the selected model present even if it's not in the live list.
+  const sortedModels = useMemo(() => {
+    const list = [...availableModels];
+    if (!list.some(m => m.id === selectedModel)) {
+      list.push({ id: selectedModel, name: selectedModel });
+    }
+    return list.sort((a, b) => classifyModel(a.id).rank - classifyModel(b.id).rank);
+  }, [availableModels, selectedModel]);
+  const recommendedId = sortedModels[0]?.id;
 
   const loadPlaylistVideos = async () => {
     if (!apiKey || !playlistId) {
@@ -292,7 +335,22 @@ export default function App() {
 
     } catch (err: any) {
       console.error(err);
-      setError(err.message || 'An unexpected error occurred.');
+      const msg = String(err?.message || '');
+      // ListModels can advertise models that 404 on generate (retired snapshots).
+      // Drop the dead model and fall through to the next-fastest one.
+      if (/no longer available|not[_ ]?found|\b404\b/i.test(msg)) {
+        const remaining = availableModels.filter(m => m.id !== selectedModel);
+        const pool = remaining.length ? remaining : FALLBACK_MODELS;
+        const nextBest = [...pool].sort((a, b) => classifyModel(a.id).rank - classifyModel(b.id).rank)[0];
+        setAvailableModels(pool);
+        if (nextBest) setSelectedModel(nextBest.id);
+        setError(
+          `"${selectedModel}" is no longer available, so it's been removed from the list.` +
+          (nextBest ? ` Switched to ${nextBest.name} — try generating again.` : ' Pick another model and try again.')
+        );
+      } else {
+        setError(msg || 'An unexpected error occurred.');
+      }
     } finally {
       clearTimeout(slowTimer);
       setIsGenerating(false);
@@ -479,11 +537,18 @@ export default function App() {
                         id="model-select"
                         value={selectedModel}
                         onChange={(e) => setSelectedModel(e.target.value)}
+                        aria-describedby="model-hint"
                         className={`${FIELD_CLASS} pl-4 pr-10 py-3 appearance-none cursor-pointer`}
                       >
-                        {MODELS.map(m => (
-                          <option key={m.id} value={m.id}>{m.name}</option>
-                        ))}
+                        {sortedModels.map(m => {
+                          const tier = classifyModel(m.id);
+                          const meta = [tier.speed, tier.cost].filter(Boolean).join(' · ');
+                          return (
+                            <option key={m.id} value={m.id}>
+                              {m.name}{meta ? ` — ${meta}` : ''}{m.id === recommendedId ? ' · Recommended' : ''}
+                            </option>
+                          );
+                        })}
                       </select>
                       <ChevronDown size={16} className="absolute right-4 top-1/2 -translate-y-1/2 opacity-40 pointer-events-none" aria-hidden="true" />
                     </div>
@@ -495,6 +560,11 @@ export default function App() {
                       {copied === 'model' ? <Check size={18} className="text-emerald-400" aria-hidden="true" /> : <Copy size={18} aria-hidden="true" />}
                     </button>
                   </div>
+                  <p id="model-hint" className="text-[11px] text-ink/60">
+                    {modelsAreLive
+                      ? 'Live list from your key · sorted fastest first. $–$$$ is relative cost, not price.'
+                      : 'Default list — add a valid API key to load your available models.'}
+                  </p>
                 </div>
 
                 {/* System Prompt */}
