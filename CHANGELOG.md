@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-09-29
+
+### Added
+
+- Preview-site model selection now uses Gemini's live model list with
+  relative speed and cost tiers, a recommended option, and fallback handling
+  for retired models.
+- Preview-site accessibility improvements include visible focus states,
+  reduced-motion support, semantic status and error regions, and accessible
+  control labels.
+
+### Changed
+
+- Episode submissions are now self posts containing the generated discussion
+  body and a direct YouTube link. A blank video-link label defaults to
+  `Watch on YouTube`.
+- Updated Devvit packages to 0.14.6 and preview-site dependencies to their
+  current releases.
+
+### Fixed
+
+- Regenerated posts and legacy queued posts retain a direct YouTube link.
+
+
 ## [0.1.8] - 2026-05-01
 
 ### Added
