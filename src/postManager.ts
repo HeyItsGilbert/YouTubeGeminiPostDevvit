@@ -18,7 +18,7 @@ export async function createEpisodePost(
   url: string,
   body: string
 ) {
-  const text = body.includes(url)
+  const text = !url || body.includes(`](${url})`)
     ? body
     : [body, `[Watch on YouTube](${url})`].filter(Boolean).join('\n\n');
   const post = await reddit.submitPost({
