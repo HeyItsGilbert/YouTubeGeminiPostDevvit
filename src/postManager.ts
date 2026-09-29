@@ -15,12 +15,16 @@ export async function createEpisodePost(
   reddit: RedditClient,
   subredditName: string,
   title: string,
+  url: string,
   body: string
 ) {
+  const text = body.includes(url)
+    ? body
+    : [body, `[Watch on YouTube](${url})`].filter(Boolean).join('\n\n');
   const post = await reddit.submitPost({
     title,
     subredditName,
-    text: body,
+    text,
   });
   return post;
 }
