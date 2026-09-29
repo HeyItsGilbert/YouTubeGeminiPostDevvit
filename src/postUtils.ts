@@ -138,8 +138,9 @@ export function isPrivateVideo(video: EpisodeData): boolean {
  * Mirrors the assembly order in the Devvit app's check_new_episodes job:
  *   [prependText, rawBody, videoLink, appendText]
  *
- * The video link is only included when both label and url are non-empty.
- * Empty/falsy parts are filtered out before joining with double newlines.
+ * The video link is always included when a URL is available. A blank label
+ * defaults to "Watch on YouTube". Empty/falsy parts are filtered out before
+ * joining with double newlines.
  */
 export function assemblePostBody(
   prependText: string,
@@ -148,6 +149,6 @@ export function assemblePostBody(
   videoUrl: string,
   appendText: string
 ): string {
-  const linkPart = videoLinkLabel && videoUrl ? `[${videoLinkLabel}](${videoUrl})` : '';
+  const linkPart = videoUrl ? `[${videoLinkLabel || 'Watch on YouTube'}](${videoUrl})` : '';
   return [prependText, rawBody, linkPart, appendText].filter(Boolean).join('\n\n');
 }

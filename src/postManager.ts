@@ -4,24 +4,22 @@ import { Devvit } from '@devvit/public-api';
 
 type RedditClient = Devvit.Context['reddit'];
 type RedisClient = Devvit.Context['redis'];
+type PostId = Parameters<RedditClient['setPostFlair']>[0]['postId'];
 
 // ----- Post creation --------------------------------------------------------
 
 /**
- * Submit a link post pointing to the episode URL with generated body text.
- * The `text` field is undocumented on link posts but accepted by the API.
+ * Submit a self post with the generated discussion body and its YouTube link.
  */
 export async function createEpisodePost(
   reddit: RedditClient,
   subredditName: string,
   title: string,
-  url: string,
   body: string
 ) {
   const post = await reddit.submitPost({
     title,
     subredditName,
-    url,
     text: body,
   });
   return post;
@@ -78,7 +76,7 @@ export async function updateEpisodePost(
 export async function applyFlair(
   reddit: RedditClient,
   subredditName: string,
-  postId: string,
+  postId: PostId,
   flairName: string
 ): Promise<void> {
   if (!flairName) return;

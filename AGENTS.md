@@ -22,7 +22,7 @@ src/
                     videos. Contains the exclusion-keyword filter.
   llmClient.ts      Gemini API client (via OpenAI-compatible endpoint). Delegates
                     message building and response parsing to postUtils.ts.
-  postManager.ts    Reddit operations: post submission (link post), flair application,
+  postManager.ts    Reddit operations: post submission (self post with video link), flair application,
                     bot author flair, post editing, and pin rotation.
   postUtils.ts      Platform-agnostic pure utilities shared with the preview web app:
                     resolvePlaylistId, buildUserMessage, parseGeneratedResponse,
@@ -76,10 +76,11 @@ check_new_episodes job (src/main.ts)
   │       POST OpenAI-compat endpoint → parse first line = title, rest = body
   │
   ├─ 6. Assemble final body:
-  │       [prependText, rawBody, videoLink?, appendText].filter(Boolean).join('\n\n')
+  │       [prependText, rawBody, videoLink, appendText].filter(Boolean).join('\n\n')
+  │       videoLink defaults to "Watch on YouTube" when no label is configured
   │
-  ├─ 7. createEpisodePost(reddit, subredditName, title, url, body)  postManager.ts
-  │       Submits a link post: url = episode.link, text = assembled body
+  ├─ 7. createEpisodePost(reddit, subredditName, title, body)       postManager.ts
+  │       Submits a self post containing the assembled body
   ├─ 8. applyFlair(...)           (if flairName set)            postManager.ts
   ├─ 9. applyBotFlair(...)        (if emoji or text set)        postManager.ts
   ├─ 10. managePins(reddit, redis, post.id)                     postManager.ts
@@ -133,7 +134,7 @@ Platform-agnostic pure utilities. **No Devvit APIs, no browser-only globals.** S
 | `parseGeneratedResponse` | `(fullText, fallbackTitle) → GeneratedPost` | Splits raw Gemini output into title (first non-empty line) and body (everything after). |
 | `matchesExclusionFilter` | `(title, keywords) → boolean` | Returns true if the title contains any comma-separated keyword (case-insensitive substring match). Used by `main.ts` for the exclusion keyword setting and by the preview app's filter UI. |
 | `isPrivateVideo` | `(video) → boolean` | Returns true if the video title is exactly `"Private video"` — YouTube's placeholder for private/deleted content. Used by `episodeChecker.ts` to filter at the fetch layer. |
-| `assemblePostBody` | `(prependText, rawBody, videoLinkLabel, videoUrl, appendText) → string` | Joins the body parts with `\n\n`, inserting a markdown link only when both label and URL are non-empty. |
+| `assemblePostBody` | `(prependText, rawBody, videoLinkLabel, videoUrl, appendText) → string` | Joins the body parts with `\n\n`, inserting a markdown link whenever a video URL is available. A blank label defaults to `Watch on YouTube`. |
 
 **Rule:** Keep this file free of platform-specific imports. If a function needs to grow a Devvit or browser dependency, move it out of `postUtils.ts` into the appropriate module instead.
 
@@ -191,7 +192,7 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 
 | Function | Purpose |
 |---|---|
-| `createEpisodePost(reddit, subredditName, title, url, body)` | Submits a **link post** — `url` is the YouTube video link, `body` is the generated text. The `text` field is not in Devvit's `SubmitLinkOptions` type but is accepted by the Reddit API. |
+| `createEpisodePost(reddit, subredditName, title, body)` | Submits a **self post** containing the generated body and its direct YouTube link. |
 | `updateEpisodePost(reddit, postId, body)` | Fetches post then calls `.edit({ text: body })` |
 | `applyBotFlair(reddit, subredditName, emoji, text)` | Sets author flair on the app's own account; skips if both emoji and text are empty |
 | `applyFlair(reddit, subredditName, postId, flairName)` | Case-insensitive flair template name match; logs error and continues if no match found |
@@ -228,7 +229,7 @@ All settings use `SettingScope.Installation`. Each subreddit configures its own 
 | `systemPrompt` | paragraph | Yes | — | Full system prompt for Gemini. First line of model output = post title |
 | `botFlairEmoji` | string | No | `''` | Emoji portion of the bot's author flair |
 | `botFlairText` | string | No | `''` | Text portion of the bot's author flair |
-| `videoLinkLabel` | string | No | `''` | If set, inserts `[label](videoUrl)` between rawBody and appendText in the post body |
+| `videoLinkLabel` | string | No | `''` | Label for the required `[label](videoUrl)` link between rawBody and appendText; defaults to `Watch on YouTube` |
 | `prependText` | paragraph | No | `''` | Prepended to final post body |
 | `appendText` | paragraph | No | `''` | Appended to final post body |
 | `flairName` | string | No | `''` | Exact post flair template name (case-insensitive match) |
@@ -284,7 +285,7 @@ The `AppInstall` trigger cancels any existing job ID before scheduling a new one
 
 5. **`SettingScope.Installation` is required** for all per-subreddit settings. `SettingScope.App` is for developer-owned secrets shared across all installs — deliberately not used here.
 
-6. **`reddit.submitPost` creates a link post.** The `url` field is the YouTube video URL. The `text` field (post body) is not declared in Devvit's `SubmitLinkOptions` type but is accepted by the Reddit API — no type suppression is needed in practice.
+6. **Link-post bodies are unsupported in Devvit 0.14.** `reddit.submitPost` therefore creates a self post containing the generated body and an explicit YouTube markdown link.
 
 ---
 

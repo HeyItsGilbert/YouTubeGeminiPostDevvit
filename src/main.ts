@@ -569,7 +569,7 @@ Devvit.addSchedulerJob({
       }
 
       // 7. Immediate post path (requireModApproval = false)
-      const post = await createEpisodePost(reddit, subredditName, title, episode.link, body);
+      const post = await createEpisodePost(reddit, subredditName, title, body);
       log(`Created post ${post.id}`);
 
       // 8. Apply post flair and bot author flair (if configured)
@@ -635,7 +635,7 @@ Devvit.addSchedulerJob({
       notificationMods = notificationModsSetting.split(',').map(u => u.trim()).filter(Boolean);
 
       console.log(`[bot] Posting pending episode: "${pending.title}"`);
-      const post = await createEpisodePost(reddit, subredditName, pending.title, pending.url, pending.body);
+      const post = await createEpisodePost(reddit, subredditName, pending.title, pending.body);
       console.log(`[bot] Created post ${post.id}`);
 
       if (flairName) {
