@@ -79,8 +79,8 @@ check_new_episodes job (src/main.ts)
   │       [prependText, rawBody, videoLink, appendText].filter(Boolean).join('\n\n')
   │       videoLink defaults to "Watch on YouTube" when no label is configured
   │
-  ├─ 7. createEpisodePost(reddit, subredditName, title, body)       postManager.ts
-  │       Submits a self post containing the assembled body
+  ├─ 7. createEpisodePost(reddit, subredditName, title, url, body)  postManager.ts
+  │       Submits a self post containing the assembled body and adds the YouTube link if needed
   ├─ 8. applyFlair(...)           (if flairName set)            postManager.ts
   ├─ 9. applyBotFlair(...)        (if emoji or text set)        postManager.ts
   ├─ 10. managePins(reddit, redis, post.id)                     postManager.ts
@@ -192,7 +192,7 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 
 | Function | Purpose |
 |---|---|
-| `createEpisodePost(reddit, subredditName, title, body)` | Submits a **self post** containing the generated body and its direct YouTube link. |
+| `createEpisodePost(reddit, subredditName, title, url, body)` | Submits a **self post** containing the generated body and its direct YouTube link. |
 | `updateEpisodePost(reddit, postId, body)` | Fetches post then calls `.edit({ text: body })` |
 | `applyBotFlair(reddit, subredditName, emoji, text)` | Sets author flair on the app's own account; skips if both emoji and text are empty |
 | `applyFlair(reddit, subredditName, postId, flairName)` | Case-insensitive flair template name match; logs error and continues if no match found |

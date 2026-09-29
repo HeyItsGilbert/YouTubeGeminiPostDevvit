@@ -79,7 +79,7 @@ Devvit.addSettings([
     type: 'string',
     name: 'videoLinkLabel',
     label: 'Video Link Label (optional)',
-    helpText: 'If set, a link to the YouTube video is inserted between the generated body and Append Text. The label becomes the link text, e.g. "Watch on YouTube" → [Watch on YouTube](url). Leave blank to omit.',
+    helpText: 'A link to the YouTube video is always inserted between the generated body and Append Text. If set, this label becomes the link text, e.g. "Watch on YouTube" → [Watch on YouTube](url). Leave blank to use "Watch on YouTube".',
     defaultValue: '',
     scope: SettingScope.Installation,
   },
@@ -569,7 +569,7 @@ Devvit.addSchedulerJob({
       }
 
       // 7. Immediate post path (requireModApproval = false)
-      const post = await createEpisodePost(reddit, subredditName, title, body);
+      const post = await createEpisodePost(reddit, subredditName, title, episode.link, body);
       log(`Created post ${post.id}`);
 
       // 8. Apply post flair and bot author flair (if configured)
@@ -635,7 +635,7 @@ Devvit.addSchedulerJob({
       notificationMods = notificationModsSetting.split(',').map(u => u.trim()).filter(Boolean);
 
       console.log(`[bot] Posting pending episode: "${pending.title}"`);
-      const post = await createEpisodePost(reddit, subredditName, pending.title, pending.body);
+      const post = await createEpisodePost(reddit, subredditName, pending.title, pending.url, pending.body);
       console.log(`[bot] Created post ${post.id}`);
 
       if (flairName) {
