@@ -17,7 +17,7 @@ A [Devvit](https://developers.reddit.com/docs/) app that monitors a YouTube play
 ```
 src/
   main.ts           Entry point. Registers settings, menu items, scheduler jobs,
-                    and the AppInstall trigger. Owns the top-level orchestration loop.
+                    and the AppInstall/AppUpgrade trigger. Owns the top-level orchestration loop.
   episodeChecker.ts YouTube Data API v3 client. Fetches playlists and individual
                     videos. Contains the exclusion-keyword filter.
   llmClient.ts      Gemini API client (via OpenAI-compatible endpoint). Delegates
@@ -51,7 +51,7 @@ preview-site/
 ### Normal run (every 30 minutes via cron, or manual mod trigger)
 
 ```
-AppInstall trigger
+AppInstall / AppUpgrade trigger
   └─► scheduler.runJob('check_new_episodes', cron='*/30 * * * *')
 
 check_new_episodes job (src/main.ts)
@@ -211,7 +211,7 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 - Manages the Google API key: stored in Redis under `google_api_key` via a mod-triggered form (not a Devvit setting, because Devvit settings are readable by mods via the settings UI)
 - Registers the `check_new_episodes` scheduler job (the core pipeline)
 - Registers the `regenerate_latest_post` scheduler job
-- Registers the `AppInstall` trigger (schedules the cron, cancels any previous job first for idempotency)
+- Registers the `AppInstall`/`AppUpgrade` trigger (schedules the cron, cancels any previous job first for idempotency — fires on both initial install and every subsequent version upgrade, since dynamically-created cron jobs are not guaranteed to survive every deploy)
 - Registers five mod menu items: "Set Google API Key", "Set pin slot", "Check for new videos", "Force post latest video (testing)", and "Regenerate latest post"
 - Exports `default Devvit` (required by Devvit platform)
 
@@ -250,7 +250,7 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | `last_episode_guid` | string | `check_new_episodes` (step 11), `post_pending_episode` | `regenerate_latest_post` | Legacy: YouTube video ID of last posted video — kept for backwards compatibility |
 | `last_episode_post_id` | string | `check_new_episodes` (step 11), `post_pending_episode` | `regenerate_latest_post` | Reddit post ID of the currently pinned post |
 | `last_episode_sticky_slot` | string (`'1'`–`'2'`) | `managePins`, `pinSlotForm` handler | `managePins` | Sticky slot the bot uses for episode posts. Written by `managePins` after each successful pin, and directly by the "Set pin slot" mod menu form. Defaults to `1` if absent. |
-| `episode_checker_job_id` | string | `AppInstall` trigger | `AppInstall` trigger | Scheduler job ID, used to cancel and re-create on reinstall |
+| `episode_checker_job_id` | string | `AppInstall`/`AppUpgrade` trigger | `AppInstall`/`AppUpgrade` trigger | Scheduler job ID, used to cancel and re-create on reinstall or upgrade |
 | `force_repost` | string (`'1'`) | "Force post latest video" menu item | `check_new_episodes` (step 4a) | One-shot flag: skip registry check for the newest video on the next run. Deleted immediately when read. |
 | `check_triggered_by` | string | "Check for new videos" / "Force post" menu items | `check_new_episodes` error handler, `post_pending_episode` error handler | Username of the mod who manually triggered; used to send a PM on failure |
 | `regenerate_triggered_by` | string | "Regenerate latest post" menu item | `regenerate_latest_post` error handler | Username of the mod who triggered regeneration; used to send a PM on failure |
@@ -265,11 +265,11 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 
 | Job name | Schedule | Trigger |
 |---|---|---|
-| `check_new_episodes` | `*/30 * * * *` (cron) | Scheduled at `AppInstall`. Also triggered immediately by "Check for new videos" mod menu item via `runAt: new Date()` |
+| `check_new_episodes` | `*/30 * * * *` (cron) | Scheduled at `AppInstall` and `AppUpgrade`. Also triggered immediately by "Check for new videos" mod menu item via `runAt: new Date()` |
 | `post_pending_episode` | No fixed schedule | Triggered immediately by "Post pending episode" and "Edit & Post pending episode" menu items. Also scheduled at `now + autoApproveWindowMinutes` by `check_new_episodes` when `requireModApproval` is true and a window is configured. |
 | `regenerate_latest_post` | No fixed schedule | Only triggered by "Regenerate latest post" mod menu item via `runAt: new Date()` |
 
-The `AppInstall` trigger cancels any existing job ID before scheduling a new one, making reinstalls idempotent.
+The `AppInstall`/`AppUpgrade` trigger cancels any existing job ID before scheduling a new one, making reinstalls and version upgrades idempotent. This runs on *every* version upgrade (not just first install) because Devvit does not guarantee dynamically-created cron jobs survive each deploy — without the `AppUpgrade` leg, a mod updating the app version could silently lose the recurring job with no automatic recovery.
 
 ---
 
@@ -377,7 +377,7 @@ A React + Vite SPA that lets mods preview what Gemini will generate before deplo
 
 - **The Gemini HTTP endpoint URL** in `llmClient.ts` — the OpenAI-compatible path is required by the Devvit HTTP proxy.
 - **The `*/30 * * * *` cron expression** — Devvit enforces a minimum polling interval for scheduled jobs; going below 30 minutes may be rejected.
-- **The `AppInstall` trigger's cancel-before-reschedule pattern** — removing this causes duplicate jobs on reinstall.
+- **The `AppInstall`/`AppUpgrade` trigger's cancel-before-reschedule pattern** — removing either event causes duplicate jobs on reinstall or a silently-dead cron job after a version upgrade.
 - **The Redis key names** — changing them invalidates deduplication state for all existing installs mid-operation.
 - **`export default Devvit`** in `main.ts` — required by the Devvit runtime entry point contract.
 - **The signatures of exported functions in `src/postUtils.ts`** — both the Devvit app and the preview web app call these functions. A signature change must be applied to both call sites simultaneously.

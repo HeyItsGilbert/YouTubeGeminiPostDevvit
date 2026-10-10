@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-10
+
+### Fixed
+
+- The scheduler job that checks for new videos is now rescheduled on every
+  app version upgrade, not just on first install. Previously, a dynamically
+  created cron job could be silently dropped when a subreddit updated to a
+  newer app version, with no automatic way to recover — the bot would stop
+  checking for new episodes until a mod noticed and manually re-triggered it.
+
 ## [0.1.9] - 2026-09-29
 
 ### Added

@@ -673,11 +673,16 @@ Devvit.addSchedulerJob({
 });
 
 // ---------------------------------------------------------------------------
-// Auto-schedule on app install
+// Auto-schedule on app install and on every subsequent version upgrade.
+// Devvit cron jobs created dynamically in app code (as opposed to jobs
+// declared in devvit.json) are not guaranteed to survive every app version
+// deploy, and AppInstall only fires once on first install — so without the
+// AppUpgrade leg here, a mod updating the app version can silently lose the
+// recurring check_new_episodes job with no automatic recovery.
 // ---------------------------------------------------------------------------
 
 Devvit.addTrigger({
-  event: 'AppInstall',
+  events: ['AppInstall', 'AppUpgrade'],
   onEvent: async (_event, context) => {
     try {
       // Cancel any existing job first (idempotent re-install)
