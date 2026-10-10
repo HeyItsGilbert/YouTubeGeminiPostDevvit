@@ -14,11 +14,11 @@
     "type-check": "tsc --build"
   },
   "dependencies": {
-    "@devvit/public-api": "0.14.6",
-    "@devvit/web": "0.14.6"
+    "@devvit/public-api": "0.14.7",
+    "@devvit/web": "0.14.7"
   },
   "devDependencies": {
-    "devvit": "0.14.6",
+    "devvit": "0.14.7",
     "dotenv-cli": "11.0.0",
     "typescript": "6.0.3"
   }
