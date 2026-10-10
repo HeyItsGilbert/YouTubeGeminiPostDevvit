@@ -15,6 +15,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   created cron job could be silently dropped when a subreddit updated to a
   newer app version, with no automatic way to recover — the bot would stop
   checking for new episodes until a mod noticed and manually re-triggered it.
+- The video checker now reads the registry in one request instead of one
+  Redis round trip per playlist video, and reads all installation settings
+  concurrently instead of sequentially. Both scaled linearly with playlist
+  size and were eating into Devvit's per-invocation execution budget on
+  subreddits with a large video history.
 
 ## [0.1.9] - 2026-09-29
 

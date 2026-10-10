@@ -4,24 +4,30 @@ import { type VideoRecord } from './types.js';
 export const REGISTRY_KEY = 'video_registry';
 
 type RedisClient = {
-  hGet: (key: string, field: string) => Promise<string | undefined | null>;
+  hGetAll: (key: string) => Promise<Record<string, string>>;
   hSet: (key: string, value: Record<string, string>) => Promise<number>;
 };
 
 /**
- * Retrieve the registry entry for a video, or null if it has never been seen.
+ * Retrieve every registry entry in a single round trip. A per-video hGet
+ * loop does one Redis round trip per video, and its latency grows linearly
+ * with playlist length — that adds up toward Devvit's per-invocation
+ * execution timeout as the playlist keeps growing. A single hGetAll() call
+ * parses the whole hash once regardless of how many videos are checked.
  */
-export async function getVideoRecord(
-  redis: RedisClient,
-  videoId: string
-): Promise<VideoRecord | null> {
-  const raw = await redis.hGet(REGISTRY_KEY, videoId);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as VideoRecord;
-  } catch {
-    return null;
+export async function getAllVideoRecords(
+  redis: RedisClient
+): Promise<Record<string, VideoRecord>> {
+  const raw = await redis.hGetAll(REGISTRY_KEY);
+  const records: Record<string, VideoRecord> = {};
+  for (const [videoId, json] of Object.entries(raw)) {
+    try {
+      records[videoId] = JSON.parse(json) as VideoRecord;
+    } catch {
+      // Skip corrupt entries — treated as "never seen" by callers.
+    }
   }
+  return records;
 }
 
 /**

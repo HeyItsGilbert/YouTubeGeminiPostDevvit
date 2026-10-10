@@ -3,7 +3,7 @@ import { Devvit, SettingScope } from "@devvit/public-api";
 import { fetchPlaylistVideos, fetchYouTubeVideoById } from "./episodeChecker.js";
 import { generateEpisodePost } from "./llmClient.js";
 import { createEpisodePost, updateEpisodePost, applyBotFlair, applyFlair, managePins } from "./postManager.js";
-import { getVideoRecord, setVideoRecord } from "./videoRegistry.js";
+import { getAllVideoRecords, setVideoRecord } from "./videoRegistry.js";
 import { assemblePostBody, applyPlaceholders, matchesExclusionFilter, isPrivateVideo } from "./postUtils.js";
 
 Devvit.configure({
@@ -342,20 +342,37 @@ Devvit.addSchedulerJob({
 
     try {
       // 1. Read all settings
-      const googleApiKey = await redis.get(REDIS_KEY_GOOGLE_API_KEY);
-      const playlistId = await settings.get<string>('youtubePlaylistId');
-      const excludeKeywords = (await settings.get<string>('excludeTitleKeywords')) || '';
-      const geminiModel = (await settings.get<string>('geminiModel')) || 'gemini-2.0-flash';
-      const systemPrompt = await settings.get<string>('systemPrompt');
-      const botFlairEmoji = (await settings.get<string>('botFlairEmoji')) || '';
-      const botFlairText = (await settings.get<string>('botFlairText')) || '';
-      const videoLinkLabel = (await settings.get<string>('videoLinkLabel')) || '';
-      const prependText = (await settings.get<string>('prependText')) || '';
-      const appendText = (await settings.get<string>('appendText')) || '';
-      const flairName = (await settings.get<string>('flairName')) || '';
-      const requireModApproval = (await settings.get<boolean>('requireModApproval')) ?? false;
-      const autoApproveWindowMinutes = (await settings.get<number>('autoApproveWindowMinutes')) ?? 0;
-      const notificationModsSetting = (await settings.get<string>('notificationMods')) || '';
+      const [
+        googleApiKey,
+        playlistId,
+        excludeKeywords,
+        geminiModel,
+        systemPrompt,
+        botFlairEmoji,
+        botFlairText,
+        videoLinkLabel,
+        prependText,
+        appendText,
+        flairName,
+        requireModApproval,
+        autoApproveWindowMinutes,
+        notificationModsSetting,
+      ] = await Promise.all([
+        redis.get(REDIS_KEY_GOOGLE_API_KEY),
+        settings.get<string>('youtubePlaylistId'),
+        settings.get<string>('excludeTitleKeywords').then(v => v || ''),
+        settings.get<string>('geminiModel').then(v => v || 'gemini-2.0-flash'),
+        settings.get<string>('systemPrompt'),
+        settings.get<string>('botFlairEmoji').then(v => v || ''),
+        settings.get<string>('botFlairText').then(v => v || ''),
+        settings.get<string>('videoLinkLabel').then(v => v || ''),
+        settings.get<string>('prependText').then(v => v || ''),
+        settings.get<string>('appendText').then(v => v || ''),
+        settings.get<string>('flairName').then(v => v || ''),
+        settings.get<boolean>('requireModApproval').then(v => v ?? false),
+        settings.get<number>('autoApproveWindowMinutes').then(v => v ?? 0),
+        settings.get<string>('notificationMods').then(v => v || ''),
+      ]);
       notificationMods = notificationModsSetting.split(',').map(u => u.trim()).filter(Boolean);
 
       // 2. Validate required settings
@@ -372,11 +389,19 @@ Devvit.addSchedulerJob({
         return;
       }
 
-      // 3. Fetch playlist videos (newest first, full list)
+      // 3. Fetch playlist videos (newest first, full list), the force-repost
+      //    flag, and every registry entry in parallel — these are all
+      //    independent reads, and resolving them concurrently (rather than
+      //    one giant hGet-per-video loop below) keeps the job well clear of
+      //    Devvit's per-invocation execution timeout as the playlist grows.
       const subredditName = context.subredditName!;
       const log = (msg: string) => console.log(`[bot:${subredditName}] ${msg}`);
       log(`Checking playlist ${playlistId}...`);
-      const videos = await fetchPlaylistVideos(googleApiKey, playlistId);
+      const [videos, forceRepostFlag, videoRecords] = await Promise.all([
+        fetchPlaylistVideos(googleApiKey, playlistId),
+        redis.get('force_repost'),
+        getAllVideoRecords(redis),
+      ]);
 
       if (!videos.length) {
         log('No videos found in YouTube playlist.');
@@ -388,7 +413,7 @@ Devvit.addSchedulerJob({
       //    they become public they are detected as new rather than skipped.  A formerly-
       //    private video that goes public in the same run as a newer video is left with
       //    its 'private' registry entry so it is picked up by the next run.
-      const forceRepost = (await redis.get('force_repost')) === '1';
+      const forceRepost = forceRepostFlag === '1';
       if (forceRepost) {
         await redis.del('force_repost');
         log('force_repost flag set — bypassing registry check for newest video');
@@ -399,7 +424,7 @@ Devvit.addSchedulerJob({
       for (const video of videos) {
         // Track private videos in the registry so we can detect when they go public.
         if (isPrivateVideo(video)) {
-          const existingRecord = await getVideoRecord(redis, video.guid);
+          const existingRecord = videoRecords[video.guid] ?? null;
           if (!existingRecord || existingRecord.status !== 'private') {
             log(`Registering private video ${video.guid} for future tracking`);
             await setVideoRecord(redis, video.guid, {
@@ -414,7 +439,7 @@ Devvit.addSchedulerJob({
         // Skip registry check for the very first (newest) video when force_repost is active
         let wasPreviouslyPrivate = false;
         if (!forceRepost || episodeToPost !== null) {
-          const record = await getVideoRecord(redis, video.guid);
+          const record = videoRecords[video.guid] ?? null;
           if (record) {
             if (record.status === 'private') {
               // Video was private before — it's now public, treat as new
@@ -572,24 +597,28 @@ Devvit.addSchedulerJob({
       const post = await createEpisodePost(reddit, subredditName, title, episode.link, body);
       log(`Created post ${post.id}`);
 
-      // 8. Apply post flair and bot author flair (if configured)
-      if (flairName) {
-        await applyFlair(reddit, subredditName, post.id, flairName);
-      }
-      await applyBotFlair(reddit, subredditName, botFlairEmoji, botFlairText);
+      // 8. Apply post flair, bot author flair, and pin the new post — these
+      //    are independent Reddit API calls that only need post.id, so run
+      //    them concurrently instead of one after another. applyFlair and
+      //    applyBotFlair catch and log their own errors internally; a
+      //    managePins() failure still propagates and is fatal, same as before.
+      await Promise.all([
+        flairName ? applyFlair(reddit, subredditName, post.id, flairName) : Promise.resolve(),
+        applyBotFlair(reddit, subredditName, botFlairEmoji, botFlairText),
+        managePins(reddit, redis, post.id),
+      ]);
 
-      // 9. Pin new post & unpin the previous one
-      await managePins(reddit, redis, post.id);
-
-      // 10. Persist to registry and keep legacy keys for backwards compatibility
-      await setVideoRecord(redis, episode.guid, {
-        title: episode.title,
-        status: 'posted',
-        postId: post.id,
-        processedAt: new Date().toISOString(),
-      });
-      await redis.set('last_episode_guid', episode.guid);
-      await redis.set('last_episode_post_id', post.id);
+      // 9. Persist to registry and keep legacy keys for backwards compatibility
+      await Promise.all([
+        setVideoRecord(redis, episode.guid, {
+          title: episode.title,
+          status: 'posted',
+          postId: post.id,
+          processedAt: new Date().toISOString(),
+        }),
+        redis.set('last_episode_guid', episode.guid),
+        redis.set('last_episode_post_id', post.id),
+      ]);
 
       console.log(`[bot] Post complete: "${title}"`);
     } catch (err) {

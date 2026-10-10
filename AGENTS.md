@@ -56,17 +56,19 @@ AppInstall / AppUpgrade trigger
 
 check_new_episodes job (src/main.ts)
   │
-  ├─ 1. Read all settings from Devvit settings + Google API key from Redis
+  ├─ 1. Read all settings (concurrently) + Google API key from Redis
   ├─ 2. Validate: googleApiKey, youtubePlaylistId, systemPrompt required
   │
-  ├─ 3. fetchPlaylistVideos(apiKey, playlistId)                 episodeChecker.ts
+  ├─ 3. In parallel: fetchPlaylistVideos, force_repost flag, and the whole
+  │     video registry (getAllVideoRecords — one hGetAll, not one hGet per
+  │     video)                                    episodeChecker.ts, videoRegistry.ts
   │       UC... channel ID is auto-converted to UU... uploads playlist
-  │       GET playlistItems (maxResults=50) → sort by publishedAt (desc)
+  │       GET playlistItems (maxResults=50, paginated) → sort by publishedAt (desc)
   │       → return EpisodeData[]
   │
   ├─ 4. For each video newest-first:                            videoRegistry.ts
   │       a. Check force_repost flag — if set, skip registry for first video only
-  │       b. getVideoRecord(redis, video.guid) → skip if already registered
+  │       b. Look up videoRecords[video.guid] (pre-fetched) → skip if already registered
   │       c. matchesExclusionFilter(title, excludeKeywords)     episodeChecker.ts
   │            → if matched: setVideoRecord(..., 'excluded'), continue
   │       d. First unregistered non-excluded video = episodeToPost
@@ -146,10 +148,10 @@ Platform-agnostic pure utilities. **No Devvit APIs, no browser-only globals.** S
 
 | Function | Signature | Purpose |
 |---|---|---|
-| `fetchPlaylistVideos` | `(apiKey, playlistId) → Promise<EpisodeData[]>` | Fetches up to 50 items from a playlist, sorts by `publishedAt` descending, filters out private/deleted videos via `isPrivateVideo`, and returns the rest as an array. Delegates UC→UU conversion to `resolvePlaylistId` in `postUtils.ts`. |
+| `fetchPlaylistVideos` | `(apiKey, playlistId) → Promise<EpisodeData[]>` | Paginates through the entire playlist (50 items per page) via `nextPageToken`, sorts the combined result by `publishedAt` descending, filters out private/deleted videos via `isPrivateVideo`, and returns the rest as an array. Delegates UC→UU conversion to `resolvePlaylistId` in `postUtils.ts`. |
 | `fetchYouTubeVideoById` | `(apiKey, videoId) → Promise<EpisodeData \| null>` | Used by the regeneration flow when the video ID is already known |
 
-**Key detail:** The playlist endpoint returns up to 50 items in API order, which is not necessarily chronological. The module sorts them by `publishedAt` before returning — do not remove this sort. The Uploads playlist (`UU...`) is always newest-first from the API, making the sort a no-op, but it is kept for correctness when a non-uploads playlist is used.
+**Key detail:** Each playlist page returns up to 50 items in API order, which is not necessarily chronological — the module paginates through every page before sorting the full combined result by `publishedAt`. The Uploads playlist (`UU...`) is always newest-first from the API, making the sort a no-op, but it is kept for correctness when a non-uploads playlist is used. As a playlist's video count grows, this means more pages (and more time) per run — see the `check_new_episodes` flow above for how the registry lookup avoids a matching per-video cost.
 
 **Private video filtering:** Videos with the exact title `"Private video"` (YouTube's placeholder for private/deleted content) are automatically filtered out at the fetch layer using `isPrivateVideo` from `postUtils.ts`. They never reach the processing loop and are not recorded in the video registry.
 
