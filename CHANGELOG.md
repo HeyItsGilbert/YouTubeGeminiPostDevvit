@@ -6,16 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-11
+
 ### Added
 
 - "Reject" action for a pending post: throws it away and records the video
   as `rejected` so it is never posted.
 - "Regenerate discussion" on the post menu of any episode post (not just the
   latest). The form pre-fills the system prompt; edits apply to that one
-  regeneration only.
+  regeneration only. Posts created before discussion comments existed
+  cannot be regenerated.
 
 ### Changed
 
+- Episode submissions are now **link posts** pointing directly at the video
+  instead of self posts, restoring Reddit's native thumbnail/preview card.
+  The generated discussion body is posted separately as a distinguished,
+  stickied top comment, since Reddit's post model cannot carry both a `url`
+  and a text body on the same post. The `videoLinkLabel` setting is removed
+  — it existed only to embed a markdown video link into the old self-post
+  body, which is no longer needed now that the video itself is the post.
 - Mod menu reduced from nine items to three subreddit items plus one post
   item:
   - "Configure bot" replaces "Set Google API Key" and "Set pin slot". Leave
@@ -34,49 +44,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The 30-minute video check could be missing entirely: AppInstall/AppUpgrade
+  did not reliably schedule it, leaving the bot to post only on manual checks
+  with nothing in the logs. The app now resets the job on install/upgrade and
+  re-verifies it (recreating it if missing) on any mod menu action and on new
+  posts or comments in the subreddit, at most once per 30 minutes.
+- With a long system prompt and a thinking model (e.g. `gemini-flash-latest`),
+  Gemini could take longer than Devvit's 30-second HTTP limit and the run
+  vanished with no log or notification. Requests now ask for minimal thinking
+  effort and give up after 20 seconds with a logged error and a failure PM.
 - A posted video that later went private and then public again was posted a
   second time. Posted videos now keep their registry record permanently.
 - While a post waited for mod approval, every 30-minute check called Gemini
   again for the same video, and a newer video arriving meanwhile marked the
   pending video as `skipped`. Pending videos are now recorded as `pending`,
   and no generation happens while a post is pending.
-- With a long system prompt and a thinking model (e.g. `gemini-flash-latest`),
-  Gemini could take longer than Devvit's 30-second HTTP limit and the run
-  vanished with no log or notification. Requests now ask for minimal thinking
-  effort and give up after 20 seconds with a logged error and a failure PM.
-- The 30-minute video check could be missing entirely — AppInstall/AppUpgrade
-  did not reliably schedule it, leaving the bot to post only on manual checks
-  with nothing in the logs. The app now re-verifies the job (and recreates it
-  if missing) on install/upgrade, on any mod menu action, and on new posts or
-  comments in the subreddit, at most once per 30 minutes.
-
-## [0.1.10] - 2026-10-10
-
-### Fixed
-
-- The scheduler job that checks for new videos is now rescheduled on every
-  app version upgrade, not just on first install. Previously, a dynamically
-  created cron job could be silently dropped when a subreddit updated to a
-  newer app version, with no automatic way to recover — the bot would stop
-  checking for new episodes until a mod noticed and manually re-triggered it.
 - The video checker now reads the registry in one request instead of one
   Redis round trip per playlist video, and reads all installation settings
   concurrently instead of sequentially. Both scaled linearly with playlist
   size and were eating into Devvit's per-invocation execution budget on
   subreddits with a large video history.
-
-### Changed
-
-- Episode submissions are now **link posts** pointing directly at the video
-  instead of self posts, restoring Reddit's native thumbnail/preview card.
-  The generated discussion body is posted separately as a distinguished,
-  stickied top comment, since Reddit's post model cannot carry both a `url`
-  and a text body on the same post. The `videoLinkLabel` setting is removed
-  — it existed only to embed a markdown video link into the old self-post
-  body, which is no longer needed now that the video itself is the post.
-  "Regenerate latest post" now edits the discussion comment instead of the
-  post; posts created before this change have no tracked comment and
-  cannot be regenerated.
 
 ## [0.1.9] - 2026-09-29
 
@@ -220,7 +207,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   queue to exercise the full moderation workflow.
 
 [Unreleased]:
-  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.7...HEAD
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.2.0...HEAD
+[0.2.0]:
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.8...v0.2.0
 [0.1.7]:
   https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.6...v0.1.7
 [0.1.6]:
