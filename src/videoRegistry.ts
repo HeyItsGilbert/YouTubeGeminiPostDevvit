@@ -32,6 +32,22 @@ export async function getAllVideoRecords(
   return records;
 }
 
+/**
+ * Find the video whose Episode Post has the given Reddit post ID.
+ */
+export async function findVideoByPostId(
+  redis: RedisClient,
+  postId: string
+): Promise<{ videoId: string; record: VideoRecord } | null> {
+  const records = await getAllVideoRecords(redis);
+  for (const [videoId, record] of Object.entries(records)) {
+    if (record.postId === postId) {
+      return { videoId, record };
+    }
+  }
+  return null;
+}
+
 async function isPosted(redis: RedisClient, videoId: string): Promise<boolean> {
   const json = await redis.hGet(REGISTRY_KEY, videoId);
   if (!json) return false;

@@ -21,13 +21,18 @@ Issues & Requests: [HeyItsGilbert/YouTubeGeminiPostDevvit](https://github.com/He
 - **Notifies the triggering mod by PM** if a manually triggered action fails
 - **Optional mod approval gate** — hold generated posts for review before publishing, with an optional auto-approve timer
 
-Moderator menu items let mods trigger an immediate check ("Check for new
-videos"), force a re-post of the latest video bypassing deduplication ("Force
-post latest video (testing)"), or regenerate the body of the latest post
-("Regenerate latest post"). When mod approval is enabled, mods can publish
-as-is ("Publish pending post"), edit before publishing ("Edit & publish pending
-post"), throw the post away and let the next check treat the video as unseen
-("Discard pending post"), or never post the video ("Reject pending video"). If any manual action fails,
+Moderators get three items in the subreddit **Mod Tools** menu:
+
+- **Configure bot** — set the Google API key and which sticky slot (1 or 2)
+  episode posts take.
+- **Check for new videos** — run a check immediately.
+- **Review pending post** — when mod approval is enabled, edit the pending post,
+  then publish it, discard it (the next check treats the video as unseen), or
+  reject the video (never post it).
+
+On any episode post, the post menu offers **Regenerate discussion**: rewrite the
+discussion comment with fresh Gemini output, optionally using an edited system
+prompt for that one regeneration. If any manual action fails,
 the triggering mod receives a Reddit PM with the error details. Scheduled
 (cron) runs are self-healing — state is only persisted on success, so the next
 30-minute tick retries automatically.
@@ -35,8 +40,9 @@ the triggering mod receives a Reddit PM with the error details. Scheduled
 ## API Key
 
 1. Navigate to your subreddit.
-2. Open the **Mod Tools** menu and select **Set Google API Key**.
-3. Paste your key into the masked input and click **Save**.
+2. Open the **Mod Tools** menu and select **Configure bot**.
+3. Paste your key into the **Google API Key** field and click **Save**. Leave it blank later
+   to keep the saved key while changing the pin slot.
 
 The key is stored in the subreddit's Redis store. To get a key, visit the visit
 the [AI Studio](https://aistudio.google.com/), create a project and API key.

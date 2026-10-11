@@ -35,12 +35,32 @@ The distinguished, stickied top-level comment on an Episode Post that carries th
 _Avoid_: Post body, description
 
 **Regenerate**:
-Rewrite the Discussion Comment of the most recent Episode Post with fresh Gemini output; the Episode Post itself is unchanged.
+Rewrite the Discussion Comment of any Episode Post with fresh Gemini output, optionally under a one-off system prompt; the Episode Post itself is unchanged.
 _Avoid_: Repost, refresh
+
+**Review**:
+A Moderator's decision on the Pending Post: Publish it (optionally edited), Discard it, or Reject its Video.
+_Avoid_: Approve, moderate
 
 **Pin Slot**:
 Which of the subreddit's two sticky positions the latest Episode Post occupies.
 _Avoid_: Sticky position, pin rotation
+
+## People and installs
+
+**Moderator**:
+A moderator of a subreddit that has the app installed; the person who configures the app and acts on Pending Posts.
+_Avoid_: End user, admin, user
+
+**Developer**:
+The maintainer of the app itself, who is not assumed to moderate any subreddit using it.
+
+**Playtest Install**:
+An install running a pre-release version of the app, used by the Developer for testing.
+
+**Testing Tool**:
+An action meant only for the Developer; it is available only on a Playtest Install and never shown to Moderators elsewhere.
+_Avoid_: Debug option, admin tool
 
 ## Video Registry
 

@@ -3,8 +3,9 @@ import { Devvit, SettingScope } from "@devvit/public-api";
 import { fetchPlaylistVideos, fetchYouTubeVideoById } from "./episodeChecker.js";
 import { generateEpisodePost } from "./llmClient.js";
 import { createEpisodePost, updateEpisodePost, applyBotFlair, applyFlair, managePins } from "./postManager.js";
-import { getAllVideoRecords, setVideoRecord, deleteVideoRecord } from "./videoRegistry.js";
+import { getAllVideoRecords, setVideoRecord, deleteVideoRecord, findVideoByPostId } from "./videoRegistry.js";
 import { assemblePostBody, applyPlaceholders, matchesExclusionFilter, isPrivateVideo } from "./postUtils.js";
+import { ensureCheckerScheduled } from "./checkerSchedule.js";
 
 Devvit.configure({
   redditAPI: true,
@@ -113,7 +114,7 @@ Devvit.addSettings([
     type: 'boolean',
     name: 'requireModApproval',
     label: 'Hold posts for mod approval',
-    helpText: 'When enabled, generated posts are queued in the mod inbox for review instead of being submitted immediately. Use "Publish pending post" or "Edit & publish pending post" in Mod Tools to publish.',
+    helpText: 'When enabled, generated posts are queued in the mod inbox for review instead of being submitted immediately. Use "Review pending post" in Mod Tools to publish, discard, or reject.',
     defaultValue: false,
     scope: SettingScope.Installation,
   },
@@ -185,60 +186,46 @@ async function sendFailureNotification(
 }
 
 // ---------------------------------------------------------------------------
-// Google API key management — stored in Redis, set via mod menu
+// Playtest Install detection — gates Testing Tools
 // ---------------------------------------------------------------------------
 
-const apiKeyForm = Devvit.createForm(
-  {
-    title: 'Set Google API Key',
-    description: 'Your key is stored in this subreddit\'s Redis store. Get a free key from Google Cloud Console with YouTube Data API v3 and Generative Language API enabled.',
+/**
+ * True on a Playtest Install. Pre-release versions created by
+ * `devvit playtest` (or `devvit upload --bump prerelease`) carry a fourth
+ * version segment, e.g. `0.1.10.3`. Testing Tools are only offered here so
+ * Moderators on real installs never see them.
+ */
+function isPlaytestInstall(context: { appVersion: string }): boolean {
+  return context.appVersion.split('.').length > 3;
+}
+
+// ---------------------------------------------------------------------------
+// Configure bot — Google API key (stored in Redis, kept out of the visible
+// settings UI) and pin slot
+// ---------------------------------------------------------------------------
+
+const configureBotForm = Devvit.createForm(
+  (data: { [key: string]: unknown }) => ({
+    title: 'Configure bot',
+    description: 'The Google API key is stored in this subreddit\'s Redis store, not in the app settings. Get a free key from Google Cloud Console with YouTube Data API v3 and Generative Language API enabled.',
     fields: [
       {
         type: 'string',
         name: 'apiKey',
         label: 'Google API Key',
-        required: true,
+        helpText: data.hasApiKey === true ? 'A key is saved. Leave blank to keep it.' : 'Required before the bot can run.',
+        required: data.hasApiKey !== true,
       },
-    ],
-    acceptLabel: 'Save',
-    cancelLabel: 'Cancel',
-  },
-  async ({ values }, context) => {
-    const key = values.apiKey?.trim();
-    if (!key) {
-      context.ui.showToast('API key cannot be empty.');
-      return;
-    }
-    await context.redis.set(REDIS_KEY_GOOGLE_API_KEY, key);
-    context.ui.showToast('Google API key saved.');
-  }
-);
-
-Devvit.addMenuItem({
-  label: 'Set Google API Key',
-  description: 'Store your Google API key (YouTube + Gemini) for this subreddit.',
-  location: 'subreddit',
-  forUserType: 'moderator',
-  onPress: (_event, context) => {
-    context.ui.showForm(apiKeyForm);
-  },
-});
-
-// ---------------------------------------------------------------------------
-// Pin slot form — lets mods choose which sticky slot the bot uses
-// ---------------------------------------------------------------------------
-
-const pinSlotForm = Devvit.createForm(
-  (data: { [key: string]: any }) => ({
-    title: 'Set Pin Slot',
-    description: 'Choose which sticky slot the bot uses when pinning new episode posts.',
-    fields: [
       {
-        type: 'number',
-        name: 'slot',
-        label: 'Sticky Slot (1 or 2)',
-        helpText: 'Reddit supports 2 sticky slots per subreddit. Use 1 for the top pin, 2 for the second.',
-        defaultValue: data.currentSlot as number,
+        type: 'select',
+        name: 'pinSlot',
+        label: 'Pin slot',
+        helpText: 'Which of the subreddit\'s two sticky slots new episode posts take.',
+        options: [
+          { label: '1 (top)', value: '1' },
+          { label: '2', value: '2' },
+        ],
+        defaultValue: [data.currentSlot === 2 ? '2' : '1'],
         required: true,
       },
     ],
@@ -246,56 +233,130 @@ const pinSlotForm = Devvit.createForm(
     cancelLabel: 'Cancel',
   }),
   async ({ values }, context) => {
-    const slot = Number(values.slot);
-    if (![1, 2].includes(slot)) {
-      context.ui.showToast('Slot must be 1 or 2.');
-      return;
-    }
-    await context.redis.set(REDIS_KEY_STICKY_SLOT, String(slot));
-    context.ui.showToast(`Pin slot set to ${slot}.`);
+    const key = (values.apiKey as string | undefined)?.trim();
+    const slot = (values.pinSlot as string[] | undefined)?.[0] === '2' ? '2' : '1';
+    await Promise.all([
+      key ? context.redis.set(REDIS_KEY_GOOGLE_API_KEY, key) : Promise.resolve(),
+      context.redis.set(REDIS_KEY_STICKY_SLOT, slot),
+    ]);
+    context.ui.showToast(key ? `API key saved; pin slot ${slot}.` : `Pin slot ${slot} saved.`);
   }
 );
 
 Devvit.addMenuItem({
-  label: 'Set pin slot',
-  description: 'Choose which sticky slot (1 or 2) the bot uses for episode posts.',
+  label: 'Configure bot',
+  description: 'Set the Google API key (YouTube + Gemini) and which sticky slot episode posts use.',
   location: 'subreddit',
   forUserType: 'moderator',
   onPress: async (_event, context) => {
-    const current = await context.redis.get(REDIS_KEY_STICKY_SLOT);
-    const currentSlot = parseInt(current ?? '1', 10);
-    context.ui.showForm(pinSlotForm, { currentSlot: [1, 2].includes(currentSlot) ? currentSlot : 1 });
+    await ensureCheckerScheduled(context, 'heal');
+    const [apiKey, current] = await Promise.all([
+      context.redis.get(REDIS_KEY_GOOGLE_API_KEY),
+      context.redis.get(REDIS_KEY_STICKY_SLOT),
+    ]);
+    context.ui.showForm(configureBotForm, {
+      hasApiKey: Boolean(apiKey),
+      currentSlot: current === '2' ? 2 : 1,
+    });
   },
 });
 
 // ---------------------------------------------------------------------------
-// Edit pending post form — pre-populated from Redis, posts on submit
+// Review pending post — one form for Publish / Discard / Reject
 // ---------------------------------------------------------------------------
 
-const editPendingPostForm = Devvit.createForm(
-  (data: { [key: string]: any }) => ({
-    title: 'Edit Episode Post',
+/**
+ * Remove the Pending Post and its auto-approve timer. Returns the removed
+ * Pending Post, or null if none was pending.
+ */
+async function clearPendingPost(
+  redis: Devvit.Context['redis'],
+  scheduler: Devvit.Context['scheduler'],
+): Promise<PendingPost | null> {
+  const pendingJson = await redis.get(REDIS_KEY_PENDING_POST);
+  if (!pendingJson) {
+    return null;
+  }
+  await cancelAutoApproveJob(redis, scheduler);
+  await redis.del(REDIS_KEY_PENDING_POST);
+  return JSON.parse(pendingJson) as PendingPost;
+}
+
+async function cancelAutoApproveJob(
+  redis: Devvit.Context['redis'],
+  scheduler: Devvit.Context['scheduler'],
+): Promise<void> {
+  const existingJobId = await redis.get(REDIS_KEY_PENDING_POST_JOB_ID);
+  if (existingJobId) {
+    try { await scheduler.cancelJob(existingJobId); } catch { /* already fired */ }
+    await redis.del(REDIS_KEY_PENDING_POST_JOB_ID);
+  }
+}
+
+const reviewPendingPostForm = Devvit.createForm(
+  (data: { [key: string]: unknown }) => ({
+    title: 'Review pending post',
+    description: `Video: ${String(data.videoTitle ?? '')}`,
     fields: [
+      {
+        type: 'select',
+        name: 'action',
+        label: 'Action',
+        options: [
+          { label: 'Publish', value: 'publish' },
+          { label: 'Discard (the video is treated as unseen on the next check)', value: 'discard' },
+          { label: 'Reject (never post this video)', value: 'reject' },
+        ],
+        defaultValue: ['publish'],
+        required: true,
+      },
       {
         type: 'string',
         name: 'postTitle',
         label: 'Post Title',
-        defaultValue: data.title,
+        defaultValue: String(data.title ?? ''),
         required: true,
       },
       {
         type: 'paragraph',
         name: 'postBody',
         label: 'Discussion Comment Body',
-        defaultValue: data.body,
+        defaultValue: String(data.body ?? ''),
         required: true,
       },
     ],
-    acceptLabel: 'Post Now',
-    cancelLabel: 'Cancel',
+    acceptLabel: 'Submit',
+    cancelLabel: 'Close',
   }),
   async ({ values }, context) => {
     const { redis, scheduler } = context;
+    const action = (values.action as string[] | undefined)?.[0] ?? 'publish';
+
+    if (action === 'discard') {
+      const pending = await clearPendingPost(redis, scheduler);
+      if (!pending) {
+        context.ui.showToast('No pending post found. It may have already been published, discarded, or rejected.');
+        return;
+      }
+      await deleteVideoRecord(redis, pending.videoId);
+      context.ui.showToast('Pending post discarded.');
+      return;
+    }
+
+    if (action === 'reject') {
+      const pending = await clearPendingPost(redis, scheduler);
+      if (!pending) {
+        context.ui.showToast('No pending post found. It may have already been published, discarded, or rejected.');
+        return;
+      }
+      await setVideoRecord(redis, pending.videoId, {
+        title: pending.videoTitle,
+        status: 'rejected',
+        processedAt: new Date().toISOString(),
+      });
+      context.ui.showToast(`Rejected "${pending.videoTitle}". It will not be posted.`);
+      return;
+    }
 
     const pendingJson = await redis.get(REDIS_KEY_PENDING_POST);
     if (!pendingJson) {
@@ -310,16 +371,33 @@ const editPendingPostForm = Devvit.createForm(
     await redis.set(REDIS_KEY_PENDING_POST, JSON.stringify(pending));
 
     // Cancel any scheduled auto-approve job — we're posting immediately
-    const existingJobId = await redis.get(REDIS_KEY_PENDING_POST_JOB_ID);
-    if (existingJobId) {
-      try { await scheduler.cancelJob(existingJobId); } catch (_) { /* already fired */ }
-      await redis.del(REDIS_KEY_PENDING_POST_JOB_ID);
-    }
+    await cancelAutoApproveJob(redis, scheduler);
 
     await scheduler.runJob({ name: 'post_pending_episode', runAt: new Date() });
-    context.ui.showToast('Posting edited episode...');
+    context.ui.showToast('Publishing pending post...');
   }
 );
+
+Devvit.addMenuItem({
+  label: 'Review pending post',
+  description: 'Edit, then publish, discard, or reject the post waiting for mod approval.',
+  location: 'subreddit',
+  forUserType: 'moderator',
+  onPress: async (_event, context) => {
+    await ensureCheckerScheduled(context, 'heal');
+    const pendingJson = await context.redis.get(REDIS_KEY_PENDING_POST);
+    if (!pendingJson) {
+      context.ui.showToast('No post is pending approval.');
+      return;
+    }
+    const pending: PendingPost = JSON.parse(pendingJson);
+    context.ui.showForm(reviewPendingPostForm, {
+      title: pending.title,
+      body: pending.body,
+      videoTitle: pending.videoTitle,
+    });
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Video checker — scheduler job
@@ -327,7 +405,7 @@ const editPendingPostForm = Devvit.createForm(
 
 Devvit.addSchedulerJob({
   name: 'check_new_episodes',
-  onRun: async (_event, context) => {
+  onRun: async (event, context) => {
     const { redis, reddit, settings } = context;
     // Hoisted so the catch block can reference it even if an early error occurs
     let notificationMods: string[] = [];
@@ -367,7 +445,7 @@ Devvit.addSchedulerJob({
 
       // 2. Validate required settings
       if (!googleApiKey) {
-        console.error('[bot] Google API key not configured. Use the "Set Google API Key" mod menu item.');
+        console.error('[bot] Google API key not configured. Use the "Configure bot" mod menu item.');
         return;
       }
       if (!playlistId) {
@@ -379,17 +457,16 @@ Devvit.addSchedulerJob({
         return;
       }
 
-      // 3. Fetch playlist videos (newest first, full list), the force-repost
-      //    flag, and every registry entry in parallel — these are all
-      //    independent reads, and resolving them concurrently (rather than
-      //    one giant hGet-per-video loop below) keeps the job well clear of
-      //    Devvit's per-invocation execution timeout as the playlist grows.
+      // 3. Fetch playlist videos (newest first, full list) and every registry
+      //    entry in parallel — these are independent reads, and resolving them
+      //    concurrently (rather than one giant hGet-per-video loop below) keeps
+      //    the job well clear of Devvit's per-invocation execution timeout as
+      //    the playlist grows.
       const subredditName = context.subredditName!;
       const log = (msg: string) => console.log(`[bot:${subredditName}] ${msg}`);
       log(`Checking playlist ${playlistId}...`);
-      const [videos, forceRepostFlag, videoRecords] = await Promise.all([
+      const [videos, videoRecords] = await Promise.all([
         fetchPlaylistVideos(googleApiKey, playlistId),
-        redis.get('force_repost'),
         getAllVideoRecords(redis),
       ]);
 
@@ -405,10 +482,10 @@ Devvit.addSchedulerJob({
       //    posted) keeps its status if it goes private. A formerly-private video that
       //    goes public in the same run as a newer video is left with its 'private'
       //    registry entry so it is picked up by the next run.
-      const forceRepost = forceRepostFlag === '1';
+      // Testing Tool: passed only by the playtest-gated "Check for new videos" form.
+      const forceRepost = event.data?.forceRepost === true;
       if (forceRepost) {
-        await redis.del('force_repost');
-        log('force_repost flag set — bypassing registry check for newest video');
+        log('Force repost requested — bypassing registry check for newest video');
       }
 
       let episodeToPost = null;
@@ -428,7 +505,7 @@ Devvit.addSchedulerJob({
           continue;
         }
 
-        // Skip registry check for the very first (newest) video when force_repost is active
+        // Skip registry check for the very first (newest) video when forceRepost is set
         let wasPreviouslyPrivate = false;
         if (!forceRepost || episodeToPost !== null) {
           const record = videoRecords[video.guid] ?? null;
@@ -539,11 +616,7 @@ Devvit.addSchedulerJob({
           ``,
           `**Video:** ${episode.link}`,
           ``,
-          `Use **Mod Tools** on r/${subredditName} to take action:`,
-          `- **"Publish pending post"** — publish as-is`,
-          `- **"Edit & publish pending post"** — edit title/body before publishing`,
-          `- **"Discard pending post"** — throw this post away; the video is treated as unseen on the next check`,
-          `- **"Reject pending video"** — never post this video`,
+          `Use **"Review pending post"** in **Mod Tools** on r/${subredditName} to edit the post, then publish it, discard it (the video is treated as unseen on the next check), or reject the video (never post it).`,
           autoApproveNote,
         ].join('\n');
 
@@ -605,19 +678,14 @@ Devvit.addSchedulerJob({
         managePins(reddit, redis, postId),
       ]);
 
-      // 9. Persist to registry and keep legacy keys for backwards compatibility
-      await Promise.all([
-        setVideoRecord(redis, episode.guid, {
-          title: episode.title,
-          status: 'posted',
-          postId,
-          commentId,
-          processedAt: new Date().toISOString(),
-        }),
-        redis.set('last_episode_guid', episode.guid),
-        redis.set('last_episode_post_id', postId),
-        redis.set('last_episode_comment_id', commentId),
-      ]);
+      // 9. Persist to registry
+      await setVideoRecord(redis, episode.guid, {
+        title: episode.title,
+        status: 'posted',
+        postId,
+        commentId,
+        processedAt: new Date().toISOString(),
+      });
 
       console.log(`[bot] Post complete: "${title}"`);
     } catch (err) {
@@ -679,9 +747,6 @@ Devvit.addSchedulerJob({
         commentId,
         processedAt: new Date().toISOString(),
       });
-      await redis.set('last_episode_guid', pending.videoId);
-      await redis.set('last_episode_post_id', postId);
-      await redis.set('last_episode_comment_id', commentId);
 
       // Clean up pending state
       await redis.del(REDIS_KEY_PENDING_POST);
@@ -696,7 +761,7 @@ Devvit.addSchedulerJob({
         notificationMods,
         triggeredBy,
         'Episode post failed',
-        `Failed to post the pending episode on r/${context.subredditName} with error:\n\n    ${err}\n\nThe episode content is still saved. Try using "Publish pending post" in Mod Tools to retry.`,
+        `Failed to post the pending episode on r/${context.subredditName} with error:\n\n    ${err}\n\nThe episode content is still saved. Try using "Review pending post" in Mod Tools to retry.`,
       );
     }
   },
@@ -714,27 +779,18 @@ Devvit.addSchedulerJob({
 Devvit.addTrigger({
   events: ['AppInstall', 'AppUpgrade'],
   onEvent: async (_event, context) => {
-    try {
-      // Cancel any existing job first (idempotent re-install)
-      const existingJobId = await context.redis.get('episode_checker_job_id');
-      if (existingJobId) {
-        try {
-          await context.scheduler.cancelJob(existingJobId);
-        } catch (_) {
-          // Job may already be gone — ignore
-        }
-      }
+    // Replace any checker cron left by an older version with a fresh one.
+    await ensureCheckerScheduled(context, 'reset');
+  },
+});
 
-      const jobId = await context.scheduler.runJob({
-        name: 'check_new_episodes',
-        cron: '*/30 * * * *', // Every 30 minutes
-      });
-
-      await context.redis.set('episode_checker_job_id', jobId);
-      console.log(`[bot] Scheduled video checker — job ID: ${jobId}`);
-    } catch (err) {
-      console.error(`[bot] Failed to schedule video checker: ${err}`);
-    }
+// AppInstall/AppUpgrade alone have left installs with no checker job and no
+// log line, so subreddit activity also re-verifies it (throttled to once per
+// 30 minutes by ensureCheckerScheduled).
+Devvit.addTrigger({
+  events: ['PostSubmit', 'CommentSubmit'],
+  onEvent: async (_event, context) => {
+    await ensureCheckerScheduled(context, 'heal');
   },
 });
 
@@ -742,191 +798,92 @@ Devvit.addTrigger({
 // Manual trigger (moderator menu action)
 // ---------------------------------------------------------------------------
 
+async function triggerCheck(context: Devvit.Context, forceRepost: boolean): Promise<void> {
+  context.ui.showToast('Checking for new videos...');
+  try {
+    const currentUser = await context.reddit.getCurrentUser();
+    if (currentUser) {
+      await context.redis.set('check_triggered_by', currentUser.username);
+    }
+    await context.scheduler.runJob({
+      name: 'check_new_episodes',
+      runAt: new Date(),
+      data: { forceRepost },
+    });
+    context.ui.showToast('Video check triggered! Check logs for results.');
+  } catch (err) {
+    console.error(`[bot] Manual trigger failed: ${err}`);
+    context.ui.showToast('Failed to trigger video check. See logs.');
+  }
+}
+
+/** Shown instead of an immediate check on a Playtest Install only. */
+const playtestCheckForm = Devvit.createForm(
+  {
+    title: 'Check for new videos',
+    description: 'Playtest install — Testing Tools are available.',
+    fields: [
+      {
+        type: 'boolean',
+        name: 'forceRepost',
+        label: 'Repost newest video even if already posted (always queues for review)',
+        defaultValue: false,
+      },
+    ],
+    acceptLabel: 'Check',
+    cancelLabel: 'Cancel',
+  },
+  async ({ values }, context) => {
+    await triggerCheck(context, values.forceRepost === true);
+  }
+);
+
 Devvit.addMenuItem({
   label: 'Check for new videos',
   description: 'Manually check the YouTube playlist for new videos and generate a post if one is found.',
   location: 'subreddit',
   forUserType: 'moderator',
   onPress: async (_event, context) => {
-    context.ui.showToast('Checking for new videos...');
-    try {
-      const currentUser = await context.reddit.getCurrentUser();
-      if (currentUser) {
-        await context.redis.set('check_triggered_by', currentUser.username);
-      }
-      await context.scheduler.runJob({
-        name: 'check_new_episodes',
-        runAt: new Date(),
-      });
-      context.ui.showToast('Video check triggered! Check logs for results.');
-    } catch (err) {
-      console.error(`[bot] Manual trigger failed: ${err}`);
-      context.ui.showToast('Failed to trigger video check. See logs.');
-    }
-  },
-});
-
-// ---------------------------------------------------------------------------
-// Force post latest video (testing — bypasses registry check)
-// ---------------------------------------------------------------------------
-
-Devvit.addMenuItem({
-  label: 'Force post latest video (testing)',
-  description: 'Re-post the newest playlist video even if it has already been posted. Sets a one-shot flag then triggers the normal check job.',
-  location: 'subreddit',
-  forUserType: 'moderator',
-  onPress: async (_event, context) => {
-    context.ui.showToast('Forcing post of latest video...');
-    try {
-      await context.redis.set('force_repost', '1');
-      const currentUser = await context.reddit.getCurrentUser();
-      if (currentUser) {
-        await context.redis.set('check_triggered_by', currentUser.username);
-      }
-      await context.scheduler.runJob({
-        name: 'check_new_episodes',
-        runAt: new Date(),
-      });
-      context.ui.showToast('Force post triggered! Check logs for results.');
-    } catch (err) {
-      console.error(`[bot] Force post trigger failed: ${err}`);
-      context.ui.showToast('Failed to trigger force post. See logs.');
-    }
-  },
-});
-
-// ---------------------------------------------------------------------------
-// Pending post — mod approval actions
-// ---------------------------------------------------------------------------
-
-Devvit.addMenuItem({
-  label: 'Publish pending post',
-  description: 'Publish the pending post as-is.',
-  location: 'subreddit',
-  forUserType: 'moderator',
-  onPress: async (_event, context) => {
-    const { redis, scheduler } = context;
-    const pendingJson = await redis.get(REDIS_KEY_PENDING_POST);
-    if (!pendingJson) {
-      context.ui.showToast('No post is pending approval.');
+    await ensureCheckerScheduled(context, 'heal');
+    if (isPlaytestInstall(context)) {
+      context.ui.showForm(playtestCheckForm);
       return;
     }
-    // Cancel any scheduled auto-approve job before posting now
-    const existingJobId = await redis.get(REDIS_KEY_PENDING_POST_JOB_ID);
-    if (existingJobId) {
-      try { await scheduler.cancelJob(existingJobId); } catch (_) { /* already fired */ }
-      await redis.del(REDIS_KEY_PENDING_POST_JOB_ID);
-    }
-    await scheduler.runJob({ name: 'post_pending_episode', runAt: new Date() });
-    context.ui.showToast('Publishing pending post...');
-  },
-});
-
-Devvit.addMenuItem({
-  label: 'Edit & publish pending post',
-  description: 'Edit the pending post title and discussion comment before publishing.',
-  location: 'subreddit',
-  forUserType: 'moderator',
-  onPress: async (_event, context) => {
-    const pendingJson = await context.redis.get(REDIS_KEY_PENDING_POST);
-    if (!pendingJson) {
-      context.ui.showToast('No post is pending approval.');
-      return;
-    }
-    const pending: PendingPost = JSON.parse(pendingJson);
-    context.ui.showForm(editPendingPostForm, { title: pending.title, body: pending.body });
-  },
-});
-
-/**
- * Remove the Pending Post and its auto-approve timer. Returns the removed
- * Pending Post, or null if none was pending.
- */
-async function clearPendingPost(
-  redis: Devvit.Context['redis'],
-  scheduler: Devvit.Context['scheduler'],
-): Promise<PendingPost | null> {
-  const pendingJson = await redis.get(REDIS_KEY_PENDING_POST);
-  if (!pendingJson) {
-    return null;
-  }
-  const existingJobId = await redis.get(REDIS_KEY_PENDING_POST_JOB_ID);
-  if (existingJobId) {
-    try { await scheduler.cancelJob(existingJobId); } catch { /* already fired */ }
-    await redis.del(REDIS_KEY_PENDING_POST_JOB_ID);
-  }
-  await redis.del(REDIS_KEY_PENDING_POST);
-  return JSON.parse(pendingJson) as PendingPost;
-}
-
-Devvit.addMenuItem({
-  label: 'Discard pending post',
-  description: 'Throw away the pending post. The video is treated as unseen on the next check.',
-  location: 'subreddit',
-  forUserType: 'moderator',
-  onPress: async (_event, context) => {
-    const pending = await clearPendingPost(context.redis, context.scheduler);
-    if (!pending) {
-      context.ui.showToast('No pending post to discard.');
-      return;
-    }
-    await deleteVideoRecord(context.redis, pending.videoId);
-    context.ui.showToast('Pending post discarded.');
-  },
-});
-
-Devvit.addMenuItem({
-  label: 'Reject pending video',
-  description: 'Throw away the pending post and never post this video.',
-  location: 'subreddit',
-  forUserType: 'moderator',
-  onPress: async (_event, context) => {
-    const pending = await clearPendingPost(context.redis, context.scheduler);
-    if (!pending) {
-      context.ui.showToast('No pending video to reject.');
-      return;
-    }
-    await setVideoRecord(context.redis, pending.videoId, {
-      title: pending.videoTitle,
-      status: 'rejected',
-      processedAt: new Date().toISOString(),
-    });
-    context.ui.showToast(`Rejected "${pending.videoTitle}". It will not be posted.`);
+    await triggerCheck(context, false);
   },
 });
 
 // ---------------------------------------------------------------------------
-// Regenerate latest post (re-run Gemini for the already-posted video)
+// Regenerate discussion — post menu action on any Episode Post
 // ---------------------------------------------------------------------------
 
-Devvit.addSchedulerJob({
-  name: 'regenerate_latest_post',
-  onRun: async (_event, context) => {
+type RegenerateJobData = {
+  videoId: string;
+  commentId: string;
+  systemPrompt: string;
+  triggeredBy: string | null;
+};
+
+Devvit.addSchedulerJob<RegenerateJobData>({
+  name: 'regenerate_discussion',
+  onRun: async (event, context) => {
     const { redis, reddit, settings } = context;
+    const { videoId, commentId, systemPrompt, triggeredBy } = event.data!;
     let notificationMods: string[] = [];
 
     try {
       const notificationModsSetting = (await settings.get<string>('notificationMods')) || '';
       notificationMods = notificationModsSetting.split(',').map(u => u.trim()).filter(Boolean);
 
-      const commentId = await redis.get('last_episode_comment_id');
-      const videoId = await redis.get('last_episode_guid');
-
-      if (!commentId || !videoId) {
-        console.error('[bot] No previous post found to regenerate. If the last post predates this app version, it has no tracked comment — wait for the next new episode.');
-        return;
-      }
-
       const googleApiKey = await redis.get(REDIS_KEY_GOOGLE_API_KEY);
       const geminiModel = (await settings.get<string>('geminiModel')) || 'gemini-2.0-flash';
-      const systemPrompt = await settings.get<string>('systemPrompt');
       const botFlairEmoji = (await settings.get<string>('botFlairEmoji')) || '';
       const botFlairText = (await settings.get<string>('botFlairText')) || '';
       const prependText = (await settings.get<string>('prependText')) || '';
       const appendText = (await settings.get<string>('appendText')) || '';
 
-      if (!googleApiKey || !systemPrompt) {
-        console.error('[bot] Missing required settings. Ensure Google API key is set via the mod menu and systemPrompt is configured.');
+      if (!googleApiKey) {
+        console.error('[bot] Google API key not configured. Use the "Configure bot" mod menu item.');
         return;
       }
 
@@ -937,7 +894,7 @@ Devvit.addSchedulerJob({
         return;
       }
 
-      console.log(`[bot] Regenerating post for "${episode.title}"...`);
+      console.log(`[bot] Regenerating discussion for "${episode.title}"...`);
       const { body: rawBody } = await generateEpisodePost(googleApiKey, episode, systemPrompt, geminiModel);
 
       const body = assemblePostBody(
@@ -951,39 +908,81 @@ Devvit.addSchedulerJob({
       console.log(`[bot] Regenerated comment ${commentId}`);
     } catch (err) {
       console.error(`[bot] Regeneration failed: ${err}`);
-      const triggeredBy = await redis.get('regenerate_triggered_by');
       await sendFailureNotification(
         reddit,
         notificationMods,
         triggeredBy,
-        'Post regeneration failed',
-        `The post regeneration on r/${context.subredditName} failed with the following error:\n\n    ${err}\n\nPlease try again later. If the error persists, check the app logs for more details.`,
+        'Discussion regeneration failed',
+        `Regenerating a discussion comment on r/${context.subredditName} failed with the following error:\n\n    ${err}\n\nPlease try again later. If the error persists, check the app logs for more details.`,
       );
     }
   },
 });
 
-Devvit.addMenuItem({
-  label: 'Regenerate latest post',
-  description: 'Re-run Gemini for the last posted video and update its discussion comment.',
-  location: 'subreddit',
-  forUserType: 'moderator',
-  onPress: async (_event, context) => {
-    context.ui.showToast('Regenerating post...');
+const regenerateDiscussionForm = Devvit.createForm(
+  (data: { [key: string]: unknown }) => ({
+    title: 'Regenerate discussion',
+    description: `Rewrites the discussion comment for "${String(data.videoTitle ?? '')}". Edits to the prompt apply to this regeneration only; the System Prompt setting is unchanged.`,
+    fields: [
+      {
+        type: 'paragraph',
+        name: 'systemPrompt',
+        label: 'System Prompt',
+        defaultValue: String(data.systemPrompt ?? ''),
+        required: true,
+      },
+    ],
+    acceptLabel: 'Regenerate',
+    cancelLabel: 'Cancel',
+  }),
+  async ({ values }, context) => {
+    const postId = context.postId;
+    const found = postId ? await findVideoByPostId(context.redis, postId) : null;
+    if (!found?.record.commentId) {
+      context.ui.showToast('Could not find the episode post to regenerate.');
+      return;
+    }
     try {
       const currentUser = await context.reddit.getCurrentUser();
-      if (currentUser) {
-        await context.redis.set('regenerate_triggered_by', currentUser.username);
-      }
       await context.scheduler.runJob({
-        name: 'regenerate_latest_post',
+        name: 'regenerate_discussion',
         runAt: new Date(),
+        data: {
+          videoId: found.videoId,
+          commentId: found.record.commentId,
+          systemPrompt: (values.systemPrompt as string).trim(),
+          triggeredBy: currentUser?.username ?? null,
+        },
       });
       context.ui.showToast('Regeneration triggered! Check logs for results.');
     } catch (err) {
       console.error(`[bot] Regenerate trigger failed: ${err}`);
       context.ui.showToast('Failed to trigger regeneration. See logs.');
     }
+  }
+);
+
+Devvit.addMenuItem({
+  label: 'Regenerate discussion',
+  description: 'Re-run Gemini for this episode post and rewrite its discussion comment.',
+  location: 'post',
+  forUserType: 'moderator',
+  onPress: async (event, context) => {
+    await ensureCheckerScheduled(context, 'heal');
+    const found = await findVideoByPostId(context.redis, event.targetId);
+    if (!found) {
+      context.ui.showToast('This is not an episode post created by the bot.');
+      return;
+    }
+    if (!found.record.commentId) {
+      context.ui.showToast('This episode post predates discussion comments and cannot be regenerated.');
+      return;
+    }
+    const systemPrompt = (await context.settings.get<string>('systemPrompt')) || '';
+    context.ui.showForm(regenerateDiscussionForm, {
+      videoTitle: found.record.title,
+      systemPrompt,
+    });
   },
 });
 

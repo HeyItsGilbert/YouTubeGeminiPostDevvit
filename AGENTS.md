@@ -17,7 +17,9 @@ A [Devvit](https://developers.reddit.com/docs/) app that monitors a YouTube play
 ```
 src/
   main.ts           Entry point. Registers settings, menu items, scheduler jobs,
-                    and the AppInstall/AppUpgrade trigger. Owns the top-level orchestration loop.
+                    and triggers. Owns the top-level orchestration loop.
+  checkerSchedule.ts ensureCheckerScheduled: keeps exactly one check_new_episodes cron
+                    job alive ('reset' on install/upgrade, throttled 'heal' elsewhere).
   episodeChecker.ts YouTube Data API v3 client. Fetches playlists and individual
                     videos. Contains the exclusion-keyword filter.
   llmClient.ts      Gemini API client (via OpenAI-compatible endpoint). Delegates
@@ -54,23 +56,25 @@ preview-site/
 ### Normal run (every 30 minutes via cron, or manual mod trigger)
 
 ```
-AppInstall / AppUpgrade trigger
-  └─► scheduler.runJob('check_new_episodes', cron='*/30 * * * *')
+AppInstall / AppUpgrade trigger        → ensureCheckerScheduled('reset')
+PostSubmit / CommentSubmit trigger,
+any mod menu press                     → ensureCheckerScheduled('heal', ≤ once per 30 min)
+  └─► scheduler.runJob('check_new_episodes', cron='*/30 * * * *') when missing
 
 check_new_episodes job (src/main.ts)
   │
   ├─ 1. Read all settings (concurrently) + Google API key from Redis
   ├─ 2. Validate: googleApiKey, youtubePlaylistId, systemPrompt required
   │
-  ├─ 3. In parallel: fetchPlaylistVideos, force_repost flag, and the whole
-  │     video registry (getAllVideoRecords — one hGetAll, not one hGet per
-  │     video)                                    episodeChecker.ts, videoRegistry.ts
+  ├─ 3. In parallel: fetchPlaylistVideos and the whole video registry
+  │     (getAllVideoRecords — one hGetAll, not one hGet per video)
+  │                                               episodeChecker.ts, videoRegistry.ts
   │       UC... channel ID is auto-converted to UU... uploads playlist
   │       GET playlistItems (maxResults=50, paginated) → sort by publishedAt (desc)
   │       → return EpisodeData[]
   │
   ├─ 4. For each video newest-first:                            videoRegistry.ts
-  │       a. Check force_repost flag — if set, skip registry for first video only
+  │       a. If job data has forceRepost (Testing Tool) — skip registry for first video only
   │       b. Look up videoRecords[video.guid] (pre-fetched) → skip if already registered
   │          (any status except 'private'; a private video is only recorded if unregistered)
   │       c. matchesExclusionFilter(title, excludeKeywords)     episodeChecker.ts
@@ -78,7 +82,7 @@ check_new_episodes job (src/main.ts)
   │       d. First unregistered non-excluded video = episodeToPost
   │          Remaining unregistered videos → setVideoRecord(..., 'skipped')
   │
-  ├─ 4½. If requireModApproval (or force_repost) and `pending_post` exists → return
+  ├─ 4½. If requireModApproval (or forceRepost) and `pending_post` exists → return
   │       (no Gemini call while a post awaits approval). Otherwise, on the approval
   │       path, the queued video is recorded as 'pending' after step 6.
   │
@@ -101,14 +105,15 @@ check_new_episodes job (src/main.ts)
   │       Write `last_episode_sticky_slot` back to Redis
   │
   └─ 11. Persist: setVideoRecord(redis, episode.guid, { status: 'posted', postId, commentId })
-                  redis.set('last_episode_guid', episode.guid)   ← legacy compat
-                  redis.set('last_episode_post_id', postId)
-                  redis.set('last_episode_comment_id', commentId)
 ```
 
-### Regeneration flow (mod menu → "Regenerate latest post")
+### Regeneration flow (post menu → "Regenerate discussion")
 
-Re-runs Gemini for the already-processed video and calls `updateEpisodePost` to edit the existing discussion comment's body text (the post itself is a link post with no editable body). Does **not** re-submit, re-flair, or re-pin. Uses `fetchYouTubeVideoById` (looks up by video ID directly) rather than the playlist. Reads `last_episode_comment_id` — a post created before this comment-based flow shipped has no tracked comment and cannot be regenerated; the job logs an error and returns.
+Available on any post; the menu handler looks the post up in the video registry (`findVideoByPostId`) and toasts if it isn't an Episode Post or has no tracked `commentId` (posts created before the comment-based flow). The form pre-fills the `systemPrompt` setting; any edit is passed to the `regenerate_discussion` job as job data and used for that run only — the setting is never changed (Devvit apps cannot write installation settings). The job re-runs Gemini and calls `updateEpisodePost` to edit the discussion comment. Does **not** re-submit, re-flair, or re-pin. Uses `fetchYouTubeVideoById` rather than the playlist. The form's submit handler reads the target from `context.postId`.
+
+### Testing Tools
+
+Devvit cannot hide menu items per install, so Testing Tools live inside forms that are only shown on a Playtest Install: `isPlaytestInstall` checks for a fourth version segment (`0.1.10.3`), which only pre-release versions from `devvit playtest` / `devvit upload --bump prerelease` have. Today the only Testing Tool is the force-repost checkbox on "Check for new videos"; on other installs that item runs a check immediately with no form. Add future Testing Tools the same way — never as their own menu item.
 
 ---
 
@@ -189,13 +194,16 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
     { "role": "system", "content": "<systemPrompt>" },
     { "role": "user",   "content": "Title: ...\nPublished: ...\nLink: ...\nDescription: ..." }
   ],
-  "max_tokens": 4096
+  "max_tokens": 4096,
+  "reasoning_effort": "minimal"
 }
 ```
 
 **Output parsing convention:** The model's raw text is split on newlines. The first non-empty line becomes the post title; all subsequent lines become the body. The mod's system prompt must instruct the model to output the title on the first line. If the model outputs an empty response, the function throws.
 
 **`finish_reason` guard:** If `finish_reason === 'length'`, a warning is logged. The response is still used; no retry is attempted.
+
+**Deadline and thinking effort:** Devvit caps outgoing HTTP at 30 s and can end the invocation with no log line at all, which is what happens when a thinking model spends too long on a long system prompt. `generateEpisodePost` therefore races the request against a 20 s deadline (`GEMINI_DEADLINE_MS`), logging and throwing on timeout so the job's failure handler PMs mods, and sends `reasoning_effort: "minimal"` (the lowest value every Gemini thinking family accepts; Gemini 3 cannot disable thinking).
 
 ---
 
@@ -211,7 +219,7 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 | `applyFlair(reddit, subredditName, postId, flairName)` | Case-insensitive flair template name match; logs error and continues if no match found |
 | `managePins(reddit, redis, newPostId)` | Reads `last_episode_sticky_slot` from Redis (default: 1), calls `sticky(slot)` on the new post — Reddit atomically displaces the slot occupant so no explicit unsticky is needed. Writes `last_episode_sticky_slot` back to Redis. Fatal if `sticky()` throws. |
 
-**Pin slot:** Defaults to slot `1` on first run. The slot is persisted in Redis under `last_episode_sticky_slot` and can be changed by mods via the "Set pin slot" mod menu item. Reddit supports 2 sticky slots per subreddit; `sticky(position)` accepts `1` or `2` and atomically replaces the occupant of that slot.
+**Pin slot:** Defaults to slot `1` on first run. The slot is persisted in Redis under `last_episode_sticky_slot` and can be changed by mods via the "Configure bot" mod menu item. Reddit supports 2 sticky slots per subreddit; `sticky(position)` accepts `1` or `2` and atomically replaces the occupant of that slot.
 
 ---
 
@@ -221,11 +229,11 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 
 - Registers `Devvit.configure` with `redditAPI`, `redis`, and the two HTTP domains
 - Declares all installation-scoped settings (see Settings section below)
-- Manages the Google API key: stored in Redis under `google_api_key` via a mod-triggered form (not a Devvit setting, because Devvit settings are readable by mods via the settings UI)
+- Manages the Google API key: stored in Redis under `google_api_key` via the "Configure bot" form (not a Devvit setting, because Devvit settings are readable by mods via the settings UI)
 - Registers the `check_new_episodes` scheduler job (the core pipeline)
-- Registers the `regenerate_latest_post` scheduler job
-- Registers the `AppInstall`/`AppUpgrade` trigger (schedules the cron, cancels any previous job first for idempotency — fires on both initial install and every subsequent version upgrade, since dynamically-created cron jobs are not guaranteed to survive every deploy)
-- Registers mod menu items: "Set Google API Key", "Set pin slot", "Check for new videos", "Force post latest video (testing)", "Regenerate latest post", and the approval actions "Publish pending post", "Edit & publish pending post", "Discard pending post" (deletes the pending post and the video's `pending` record so the next check treats it as unseen), and "Reject pending video" (deletes the pending post and records the video as `rejected`)
+- Registers the `regenerate_discussion` scheduler job
+- Registers the `AppInstall`/`AppUpgrade` trigger (`ensureCheckerScheduled('reset')`: cancel every existing checker cron, schedule a fresh one) and a `PostSubmit`/`CommentSubmit` trigger (`ensureCheckerScheduled('heal')`); every mod menu press also heals. See "Scheduler jobs" for why.
+- Registers three subreddit mod menu items — "Configure bot" (API key + pin slot), "Check for new videos" (on a Playtest Install, opens a form with Testing Tools), and "Review pending post" (one form: edit, then Publish / Discard / Reject; Discard deletes the pending post and the video's `pending` record, Reject records the video as `rejected`) — and one post mod menu item, "Regenerate discussion"
 - Exports `default Devvit` (required by Devvit platform)
 
 ---
@@ -246,10 +254,10 @@ All settings use `SettingScope.Installation`. Each subreddit configures its own 
 | `appendText` | paragraph | No | `''` | Appended to final post body |
 | `flairName` | string | No | `''` | Exact post flair template name (case-insensitive match) |
 | `notificationMods` | string | No | `''` | Comma-separated Reddit usernames to notify when a post is queued (e.g. `"alice, bob"`). Each user receives a PM. When blank, notification goes to the general mod inbox via `createModInboxConversation`. Only applies when `requireModApproval` is true. |
-| `requireModApproval` | boolean | No | `false` | When true, generated posts are stored in Redis, the video is recorded as `pending`, and a notification is sent instead of posting immediately. While a post is pending, checks skip generation entirely. Mods use "Publish pending post" or "Edit & publish pending post" to publish, "Discard pending post" to throw it away, or "Reject pending video" to never post the video. |
+| `requireModApproval` | boolean | No | `false` | When true, generated posts are stored in Redis, the video is recorded as `pending`, and a notification is sent instead of posting immediately. While a post is pending, checks skip generation entirely. Mods use the "Review pending post" form to publish, discard, or reject. |
 | `autoApproveWindowMinutes` | number | No | `0` | Only applies when `requireModApproval` is true. When > 0, schedules a `post_pending_episode` job to auto-publish after this many minutes if no mod acts first. Set to `0` for indefinite hold. |
 
-The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored directly in Redis via the "Set Google API Key" mod menu form, keeping it out of the visible Devvit settings UI.
+The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored directly in Redis via the "Configure bot" mod menu form, keeping it out of the visible Devvit settings UI.
 
 ---
 
@@ -257,20 +265,18 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 
 | Key | Type | Written by | Read by | Purpose |
 |---|---|---|---|---|
-| `google_api_key` | string | `apiKeyForm` handler | `check_new_episodes`, `regenerate_latest_post` | Google API key for both YouTube and Gemini |
-| `video_registry` | hash | `check_new_episodes` (step 4, 11), `post_pending_episode`, "Discard pending post" / "Reject pending video" menu items | `check_new_episodes` (step 4) | Hash of videoId → `VideoRecord` JSON. Tracks every seen video with status `posted`, `pending`, `excluded`, `rejected`, `skipped`, or `private`. `posted` is terminal: `setVideoRecord` ignores non-`posted` writes over it and `deleteVideoRecord` refuses to remove it. |
-| `last_episode_guid` | string | `check_new_episodes` (step 11), `post_pending_episode` | `regenerate_latest_post` | Legacy: YouTube video ID of last posted video — kept for backwards compatibility |
-| `last_episode_post_id` | string | `check_new_episodes` (step 11), `post_pending_episode` | — | Reddit post ID of the currently pinned link post |
-| `last_episode_comment_id` | string | `check_new_episodes` (step 11), `post_pending_episode` | `regenerate_latest_post` | Reddit comment ID of the discussion comment under the currently pinned post. Posts created before this field existed have no tracked comment and cannot be regenerated. |
-| `last_episode_sticky_slot` | string (`'1'`–`'2'`) | `managePins`, `pinSlotForm` handler | `managePins` | Sticky slot the bot uses for episode posts. Written by `managePins` after each successful pin, and directly by the "Set pin slot" mod menu form. Defaults to `1` if absent. |
-| `episode_checker_job_id` | string | `AppInstall`/`AppUpgrade` trigger | `AppInstall`/`AppUpgrade` trigger | Scheduler job ID, used to cancel and re-create on reinstall or upgrade |
-| `force_repost` | string (`'1'`) | "Force post latest video" menu item | `check_new_episodes` (step 4a) | One-shot flag: skip registry check for the newest video on the next run. Deleted immediately when read. |
-| `check_triggered_by` | string | "Check for new videos" / "Force post" menu items | `check_new_episodes` error handler, `post_pending_episode` error handler | Username of the mod who manually triggered; used to send a PM on failure |
-| `regenerate_triggered_by` | string | "Regenerate latest post" menu item | `regenerate_latest_post` error handler | Username of the mod who triggered regeneration; used to send a PM on failure |
-| `pending_post` | string (JSON) | `check_new_episodes` (approval gate path) | `check_new_episodes` (skips generation while set), `post_pending_episode`, "Publish" / "Edit & publish" / "Discard" / "Reject" menu items | Serialised `PendingPost` object holding generated title, body, url, videoId, videoTitle, and generatedAt timestamp. Deleted when the post is published, discarded, or rejected. |
-| `pending_post_job_id` | string | `check_new_episodes` (when `autoApproveWindowMinutes > 0`) | "Publish" / "Edit & publish" / "Discard" / "Reject" menu items | Scheduler job ID for the auto-approve timer. Cancelled and deleted when a mod acts first. |
+| `google_api_key` | string | "Configure bot" form | `check_new_episodes`, `regenerate_discussion` | Google API key for both YouTube and Gemini |
+| `video_registry` | hash | `check_new_episodes` (step 4, 11), `post_pending_episode`, "Review pending post" form (Discard / Reject) | `check_new_episodes` (step 4), "Regenerate discussion" (`findVideoByPostId`) | Hash of videoId → `VideoRecord` JSON. Tracks every seen video with status `posted`, `pending`, `excluded`, `rejected`, `skipped`, or `private`. `posted` is terminal: `setVideoRecord` ignores non-`posted` writes over it and `deleteVideoRecord` refuses to remove it. |
+| `last_episode_sticky_slot` | string (`'1'`–`'2'`) | `managePins`, "Configure bot" form | `managePins`, "Configure bot" form | Sticky slot the bot uses for episode posts. Written by `managePins` after each successful pin, and directly by the "Configure bot" form. Defaults to `1` if absent. |
+| `episode_checker_job_id` | string | `ensureCheckerScheduled` | — | ID of the current checker cron job, for debugging. The scheduler's `listJobs()` is the source of truth. |
+| `episode_checker_verified_at` | string (epoch ms) | `ensureCheckerScheduled` | `ensureCheckerScheduled` | When the checker job was last verified; throttles 'heal' to once per 30 minutes. |
+| `check_triggered_by` | string | "Check for new videos" menu item / playtest form | `check_new_episodes` error handler, `post_pending_episode` error handler | Username of the mod who manually triggered; used to send a PM on failure |
+| `pending_post` | string (JSON) | `check_new_episodes` (approval gate path), "Review pending post" form (Publish writes edits back) | `check_new_episodes` (skips generation while set), `post_pending_episode`, "Review pending post" menu item and form | Serialised `PendingPost` object holding generated title, body, url, videoId, videoTitle, and generatedAt timestamp. Deleted when the post is published, discarded, or rejected. |
+| `pending_post_job_id` | string | `check_new_episodes` (when `autoApproveWindowMinutes > 0`) | "Review pending post" form | Scheduler job ID for the auto-approve timer. Cancelled and deleted when a mod acts first. |
 
-**Resetting state:** To force a repost of the latest video, use the "Force post latest video (testing)" mod menu item. To manually clear a video from the registry, delete its field from the `video_registry` hash in Redis.
+Keys no longer written (may linger on older installs, safe to delete): `last_episode_guid`, `last_episode_post_id`, `last_episode_comment_id`, `force_repost`, `regenerate_triggered_by`.
+
+**Resetting state:** On a Playtest Install, tick the force-repost Testing Tool in the "Check for new videos" form to repost the newest video. To manually clear a video from the registry, delete its field from the `video_registry` hash in Redis.
 
 ---
 
@@ -278,11 +284,11 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 
 | Job name | Schedule | Trigger |
 |---|---|---|
-| `check_new_episodes` | `*/30 * * * *` (cron) | Scheduled at `AppInstall` and `AppUpgrade`. Also triggered immediately by "Check for new videos" mod menu item via `runAt: new Date()` |
-| `post_pending_episode` | No fixed schedule | Triggered immediately by "Publish pending post" and "Edit & publish pending post" menu items. Also scheduled at `now + autoApproveWindowMinutes` by `check_new_episodes` when `requireModApproval` is true and a window is configured. |
-| `regenerate_latest_post` | No fixed schedule | Only triggered by "Regenerate latest post" mod menu item via `runAt: new Date()` |
+| `check_new_episodes` | `*/30 * * * *` (cron) | Kept alive by `ensureCheckerScheduled` (see below). Also triggered immediately by "Check for new videos" via `runAt: new Date()` with job data `{ forceRepost }` (`true` only from the playtest form). |
+| `post_pending_episode` | No fixed schedule | Triggered immediately by the "Review pending post" form's Publish action. Also scheduled at `now + autoApproveWindowMinutes` by `check_new_episodes` when `requireModApproval` is true and a window is configured. |
+| `regenerate_discussion` | No fixed schedule | Only triggered by the "Regenerate discussion" post menu form via `runAt: new Date()`, with job data `{ videoId, commentId, systemPrompt, triggeredBy }`. |
 
-The `AppInstall`/`AppUpgrade` trigger cancels any existing job ID before scheduling a new one, making reinstalls and version upgrades idempotent. This runs on *every* version upgrade (not just first install) because Devvit does not guarantee dynamically-created cron jobs survive each deploy — without the `AppUpgrade` leg, a mod updating the app version could silently lose the recurring job with no automatic recovery.
+Blocks apps cannot declare a cron in `devvit.json` (`scheduler.tasks` requires a `server` entry point), so the checker cron is created at runtime by `ensureCheckerScheduled` in `src/checkerSchedule.ts`. On `AppInstall`/`AppUpgrade` it runs in `'reset'` mode: cancel every `check_new_episodes` cron and schedule a fresh one, so a job from an older version is replaced. Those events alone proved unreliable — a playtest install was found with no job, no stored job ID, and no trigger log across six version changes — so `'heal'` mode also runs on every mod menu press and on `PostSubmit`/`CommentSubmit`. Heal is throttled to once per 30 minutes via `episode_checker_verified_at`, schedules the job only if `listJobs()` has none, and cancels duplicates left by concurrent heals. It never throws.
 
 ---
 
@@ -327,7 +333,7 @@ Errors use `console.error`; informational output uses `console.log`; warnings us
 
 ### Change the Gemini model or request parameters
 
-Edit `generateEpisodePost` in `src/llmClient.ts`. The `model` and `max_tokens` fields are in the JSON body. The `model` value comes from the `geminiModel` installation setting so mods can change it without a code deploy.
+Edit `generateEpisodePost` in `src/llmClient.ts`. The `model`, `max_tokens`, and `reasoning_effort` fields are in the JSON body. The `model` value comes from the `geminiModel` installation setting so mods can change it without a code deploy. Keep `GEMINI_DEADLINE_MS` comfortably under Devvit's 30 s HTTP limit.
 
 ### Change the post body assembly order
 
@@ -390,7 +396,7 @@ A React + Vite SPA that lets mods preview what Gemini will generate before deplo
 
 - **The Gemini HTTP endpoint URL** in `llmClient.ts` — the OpenAI-compatible path is required by the Devvit HTTP proxy.
 - **The `*/30 * * * *` cron expression** — Devvit enforces a minimum polling interval for scheduled jobs; going below 30 minutes may be rejected.
-- **The `AppInstall`/`AppUpgrade` trigger's cancel-before-reschedule pattern** — removing either event causes duplicate jobs on reinstall or a silently-dead cron job after a version upgrade.
+- **`ensureCheckerScheduled` and its callers** — the install/upgrade `'reset'` plus the activity/menu `'heal'` are what keep the cron alive; removing either leaves installs silently never checking for videos.
 - **The Redis key names** — changing them invalidates deduplication state for all existing installs mid-operation.
 - **`export default Devvit`** in `main.ts` — required by the Devvit runtime entry point contract.
 - **The signatures of exported functions in `src/postUtils.ts`** — both the Devvit app and the preview web app call these functions. A signature change must be applied to both call sites simultaneously.

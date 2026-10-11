@@ -8,15 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- "Reject pending video" mod action: throws away the pending post and records
-  the video as `rejected` so it is never posted.
+- "Reject" action for a pending post: throws it away and records the video
+  as `rejected` so it is never posted.
+- "Regenerate discussion" on the post menu of any episode post (not just the
+  latest). The form pre-fills the system prompt; edits apply to that one
+  regeneration only.
 
 ### Changed
 
-- "Cancel pending episode" is now "Discard pending post": the pending post is
-  thrown away and the video is treated as unseen on the next check. The other
-  approval actions are renamed "Publish pending post" and "Edit & publish
-  pending post".
+- Mod menu reduced from nine items to three subreddit items plus one post
+  item:
+  - "Configure bot" replaces "Set Google API Key" and "Set pin slot". Leave
+    the key blank to keep the saved one.
+  - "Review pending post" replaces "Post pending episode", "Edit & Post
+    pending episode", and "Cancel pending episode": one form to edit, then
+    Publish, Discard, or Reject. Discard throws the post away and the video
+    is treated as unseen on the next check.
+  - "Regenerate latest post" is now "Regenerate discussion" on the post menu.
+  - "Force post latest video (testing)" is removed from the menu. On
+    playtest (pre-release) installs only, "Check for new videos" opens a form
+    with a force-repost option; elsewhere it runs immediately.
+- The `last_episode_guid`, `last_episode_post_id`, `last_episode_comment_id`,
+  `force_repost`, and `regenerate_triggered_by` Redis keys are no longer
+  written.
 
 ### Fixed
 
@@ -26,6 +40,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   again for the same video, and a newer video arriving meanwhile marked the
   pending video as `skipped`. Pending videos are now recorded as `pending`,
   and no generation happens while a post is pending.
+- With a long system prompt and a thinking model (e.g. `gemini-flash-latest`),
+  Gemini could take longer than Devvit's 30-second HTTP limit and the run
+  vanished with no log or notification. Requests now ask for minimal thinking
+  effort and give up after 20 seconds with a logged error and a failure PM.
+- The 30-minute video check could be missing entirely — AppInstall/AppUpgrade
+  did not reliably schedule it, leaving the bot to post only on manual checks
+  with nothing in the logs. The app now re-verifies the job (and recreates it
+  if missing) on install/upgrade, on any mod menu action, and on new posts or
+  comments in the subreddit, at most once per 30 minutes.
 
 ## [0.1.10] - 2026-10-10
 

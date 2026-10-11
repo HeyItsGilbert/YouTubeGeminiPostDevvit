@@ -5,6 +5,17 @@ import { buildUserMessage, parseGeneratedResponse, applyPlaceholders } from './p
 // `:generateContent`, which Devvit's HTTP proxy misinterprets as gRPC routing.
 const GEMINI_OPENAI_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 
+// Devvit cuts HTTP requests off at 30 s and can end the whole invocation
+// without logging anything. Give up earlier so the error is logged and the
+// job's failure handler can notify mods, with headroom for the YouTube calls
+// that run before Gemini in the same invocation.
+const GEMINI_DEADLINE_MS = 20_000;
+
+// Thinking time is what pushes long system prompts past the deadline.
+// 'minimal' is the lowest effort every Gemini thinking family accepts on the
+// OpenAI-compatible endpoint (Gemini 3 cannot disable thinking entirely).
+const GEMINI_REASONING_EFFORT = 'minimal';
+
 /**
  * Call the Gemini API to generate a post from video metadata.
  * Uses the OpenAI-compatible endpoint so the URL has no colon-prefixed
@@ -22,23 +33,44 @@ export async function generateEpisodePost(
   console.log(`[llmClient] POST ${GEMINI_OPENAI_URL} (model: ${geminiModel})`);
   console.log(`[llmClient] System prompt: ${resolvedSystemPrompt.length} chars, user message: ${userMessage.length} chars`);
 
-  const response = await fetch(GEMINI_OPENAI_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: geminiModel,
-      messages: [
-        { role: 'system', content: resolvedSystemPrompt },
-        { role: 'user', content: userMessage },
-      ],
-      max_tokens: 4096,
-    }),
+  let cancelDeadline = (): void => {};
+  const timedOut = new Promise<never>((_, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Gemini did not respond within ${GEMINI_DEADLINE_MS / 1000} s (model: ${geminiModel}). Try a shorter system prompt or a faster model.`)),
+      GEMINI_DEADLINE_MS,
+    );
+    cancelDeadline = () => clearTimeout(timer);
   });
+  const started = Date.now();
+  let response: Response;
+  try {
+    response = await Promise.race([
+      fetch(GEMINI_OPENAI_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: geminiModel,
+          messages: [
+            { role: 'system', content: resolvedSystemPrompt },
+            { role: 'user', content: userMessage },
+          ],
+          max_tokens: 4096,
+          reasoning_effort: GEMINI_REASONING_EFFORT,
+        }),
+      }),
+      timedOut,
+    ]);
+  } catch (err) {
+    console.error(`[llmClient] Request failed after ${Date.now() - started} ms: ${err}`);
+    throw err;
+  } finally {
+    cancelDeadline();
+  }
 
-  console.log(`[llmClient] Response status: ${response.status}`);
+  console.log(`[llmClient] Response status: ${response.status} after ${Date.now() - started} ms`);
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '(unreadable)');
