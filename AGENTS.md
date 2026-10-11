@@ -22,14 +22,15 @@ src/
                     videos. Contains the exclusion-keyword filter.
   llmClient.ts      Gemini API client (via OpenAI-compatible endpoint). Delegates
                     message building and response parsing to postUtils.ts.
-  postManager.ts    Reddit operations: post submission (self post with video link), flair application,
-                    bot author flair, post editing, and pin rotation.
+  postManager.ts    Reddit operations: link post submission with a distinguished, stickied
+                    discussion comment, flair application, bot author flair, comment editing,
+                    and pin rotation.
   postUtils.ts      Platform-agnostic pure utilities shared with the preview web app:
                     resolvePlaylistId, buildUserMessage, parseGeneratedResponse,
                     assemblePostBody. No Devvit or browser dependencies — safe to
                     import from both runtimes.
   videoRegistry.ts  Redis hash-backed registry of every video the bot has seen.
-                    Stores status (posted/excluded/skipped) and postId per video ID.
+                    Stores status (posted/excluded/skipped) and postId/commentId per video ID.
   types.ts          Shared interfaces: EpisodeData, GeneratedPost, VideoRecord.
 
 devvit.json         App manifest. Declares entry point and allowed HTTP domains.
@@ -77,27 +78,30 @@ check_new_episodes job (src/main.ts)
   ├─ 5. generateEpisodePost(apiKey, episode, systemPrompt, model)  llmClient.ts
   │       POST OpenAI-compat endpoint → parse first line = title, rest = body
   │
-  ├─ 6. Assemble final body:
-  │       [prependText, rawBody, videoLink, appendText].filter(Boolean).join('\n\n')
-  │       videoLink defaults to "Watch on YouTube" when no label is configured
+  ├─ 6. Assemble final discussion body (becomes the comment, not the post):
+  │       [prependText, rawBody, appendText].filter(Boolean).join('\n\n')
   │
   ├─ 7. createEpisodePost(reddit, subredditName, title, url, body)  postManager.ts
-  │       Submits a self post containing the assembled body and adds the YouTube link if needed
+  │       Submits a LINK post (url = episode.link) — gets Reddit's native thumbnail/
+  │       preview card. Then posts `body` as a distinguished, stickied top-level
+  │       comment on it (Reddit's post model can't carry both a url and a body).
+  │       Returns { postId, commentId }.
   ├─ 8. applyFlair(...)           (if flairName set)            postManager.ts
   ├─ 9. applyBotFlair(...)        (if emoji or text set)        postManager.ts
-  ├─ 10. managePins(reddit, redis, post.id)                     postManager.ts
+  ├─ 10. managePins(reddit, redis, postId)                      postManager.ts
   │       Read `last_episode_sticky_slot` (default 1), sticky new post into that
   │       slot (Reddit atomically displaces the occupant — no explicit unsticky)
   │       Write `last_episode_sticky_slot` back to Redis
   │
-  └─ 11. Persist: setVideoRecord(redis, episode.guid, { status: 'posted', postId })
+  └─ 11. Persist: setVideoRecord(redis, episode.guid, { status: 'posted', postId, commentId })
                   redis.set('last_episode_guid', episode.guid)   ← legacy compat
-                  redis.set('last_episode_post_id', post.id)
+                  redis.set('last_episode_post_id', postId)
+                  redis.set('last_episode_comment_id', commentId)
 ```
 
 ### Regeneration flow (mod menu → "Regenerate latest post")
 
-Re-runs Gemini for the already-processed video and calls `updateEpisodePost` to edit the existing post body text. Does **not** re-submit, re-flair, or re-pin. Uses `fetchYouTubeVideoById` (looks up by video ID directly) rather than the playlist.
+Re-runs Gemini for the already-processed video and calls `updateEpisodePost` to edit the existing discussion comment's body text (the post itself is a link post with no editable body). Does **not** re-submit, re-flair, or re-pin. Uses `fetchYouTubeVideoById` (looks up by video ID directly) rather than the playlist. Reads `last_episode_comment_id` — a post created before this comment-based flow shipped has no tracked comment and cannot be regenerated; the job logs an error and returns.
 
 ---
 
@@ -136,7 +140,7 @@ Platform-agnostic pure utilities. **No Devvit APIs, no browser-only globals.** S
 | `parseGeneratedResponse` | `(fullText, fallbackTitle) → GeneratedPost` | Splits raw Gemini output into title (first non-empty line) and body (everything after). |
 | `matchesExclusionFilter` | `(title, keywords) → boolean` | Returns true if the title contains any comma-separated keyword (case-insensitive substring match). Used by `main.ts` for the exclusion keyword setting and by the preview app's filter UI. |
 | `isPrivateVideo` | `(video) → boolean` | Returns true if the video title is exactly `"Private video"` — YouTube's placeholder for private/deleted content. Used by `episodeChecker.ts` to filter at the fetch layer. |
-| `assemblePostBody` | `(prependText, rawBody, videoLinkLabel, videoUrl, appendText) → string` | Joins the body parts with `\n\n`, inserting a markdown link whenever a video URL is available. A blank label defaults to `Watch on YouTube`. |
+| `assemblePostBody` | `(prependText, rawBody, appendText) → string` | Joins the parts with `\n\n`, filtering out empty ones. No video link is inserted — in this app the video is the post's `url`, not text in the body. |
 
 **Rule:** Keep this file free of platform-specific imports. If a function needs to grow a Devvit or browser dependency, move it out of `postUtils.ts` into the appropriate module instead.
 
@@ -194,8 +198,8 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 
 | Function | Purpose |
 |---|---|
-| `createEpisodePost(reddit, subredditName, title, url, body)` | Submits a **self post** containing the generated body and its direct YouTube link. |
-| `updateEpisodePost(reddit, postId, body)` | Fetches post then calls `.edit({ text: body })` |
+| `createEpisodePost(reddit, subredditName, title, url, body)` | Submits a **link post** (`url` = video) for the native thumbnail/preview card, then posts `body` as a distinguished, stickied top-level comment. Returns `{ postId, commentId }`. |
+| `updateEpisodePost(reddit, commentId, body)` | Fetches the discussion comment then calls `.edit({ text: body })` |
 | `applyBotFlair(reddit, subredditName, emoji, text)` | Sets author flair on the app's own account; skips if both emoji and text are empty |
 | `applyFlair(reddit, subredditName, postId, flairName)` | Case-insensitive flair template name match; logs error and continues if no match found |
 | `managePins(reddit, redis, newPostId)` | Reads `last_episode_sticky_slot` from Redis (default: 1), calls `sticky(slot)` on the new post — Reddit atomically displaces the slot occupant so no explicit unsticky is needed. Writes `last_episode_sticky_slot` back to Redis. Fatal if `sticky()` throws. |
@@ -231,7 +235,6 @@ All settings use `SettingScope.Installation`. Each subreddit configures its own 
 | `systemPrompt` | paragraph | Yes | — | Full system prompt for Gemini. First line of model output = post title |
 | `botFlairEmoji` | string | No | `''` | Emoji portion of the bot's author flair |
 | `botFlairText` | string | No | `''` | Text portion of the bot's author flair |
-| `videoLinkLabel` | string | No | `''` | Label for the required `[label](videoUrl)` link between rawBody and appendText; defaults to `Watch on YouTube` |
 | `prependText` | paragraph | No | `''` | Prepended to final post body |
 | `appendText` | paragraph | No | `''` | Appended to final post body |
 | `flairName` | string | No | `''` | Exact post flair template name (case-insensitive match) |
@@ -248,9 +251,10 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | Key | Type | Written by | Read by | Purpose |
 |---|---|---|---|---|
 | `google_api_key` | string | `apiKeyForm` handler | `check_new_episodes`, `regenerate_latest_post` | Google API key for both YouTube and Gemini |
-| `video_registry` | hash | `check_new_episodes` (step 4, 11) | `check_new_episodes` (step 4) | Hash of videoId → `VideoRecord` JSON. Tracks every seen video with status `posted`, `excluded`, or `skipped`. |
+| `video_registry` | hash | `check_new_episodes` (step 4, 11) | `check_new_episodes` (step 4) | Hash of videoId → `VideoRecord` JSON. Tracks every seen video with status `posted`, `excluded`, `skipped`, or `private`. |
 | `last_episode_guid` | string | `check_new_episodes` (step 11), `post_pending_episode` | `regenerate_latest_post` | Legacy: YouTube video ID of last posted video — kept for backwards compatibility |
-| `last_episode_post_id` | string | `check_new_episodes` (step 11), `post_pending_episode` | `regenerate_latest_post` | Reddit post ID of the currently pinned post |
+| `last_episode_post_id` | string | `check_new_episodes` (step 11), `post_pending_episode` | — | Reddit post ID of the currently pinned link post |
+| `last_episode_comment_id` | string | `check_new_episodes` (step 11), `post_pending_episode` | `regenerate_latest_post` | Reddit comment ID of the discussion comment under the currently pinned post. Posts created before this field existed have no tracked comment and cannot be regenerated. |
 | `last_episode_sticky_slot` | string (`'1'`–`'2'`) | `managePins`, `pinSlotForm` handler | `managePins` | Sticky slot the bot uses for episode posts. Written by `managePins` after each successful pin, and directly by the "Set pin slot" mod menu form. Defaults to `1` if absent. |
 | `episode_checker_job_id` | string | `AppInstall`/`AppUpgrade` trigger | `AppInstall`/`AppUpgrade` trigger | Scheduler job ID, used to cancel and re-create on reinstall or upgrade |
 | `force_repost` | string (`'1'`) | "Force post latest video" menu item | `check_new_episodes` (step 4a) | One-shot flag: skip registry check for the newest video on the next run. Deleted immediately when read. |
@@ -287,7 +291,7 @@ The `AppInstall`/`AppUpgrade` trigger cancels any existing job ID before schedul
 
 5. **`SettingScope.Installation` is required** for all per-subreddit settings. `SettingScope.App` is for developer-owned secrets shared across all installs — deliberately not used here.
 
-6. **Link-post bodies are unsupported in Devvit 0.14.** `reddit.submitPost` therefore creates a self post containing the generated body and an explicit YouTube markdown link.
+6. **Link posts (`url`) and self-post bodies (`text`/`richtext`) are mutually exclusive on Reddit** — this is a platform-level constraint in Reddit's data model, not a Devvit limitation, and it isn't fixable from the app. Confirmed dead ends, do not re-attempt: a richtext `embed` node pointing at the video is silently stripped by Reddit (the post comes back with an empty body); a bare video URL on its own line in self-post markdown text does not get Reddit's auto-embed preview card, it just renders as a plain link. The only way to get both the native video thumbnail/preview card and the full discussion text is what this app does — submit a genuine link post (`url` = video) and post the discussion body separately as a distinguished, stickied top-level comment (see `createEpisodePost` in `postManager.ts`).
 
 ---
 
@@ -320,7 +324,7 @@ Edit `generateEpisodePost` in `src/llmClient.ts`. The `model` and `max_tokens` f
 
 ### Change the post body assembly order
 
-The body is assembled by `assemblePostBody` in `src/postUtils.ts`. Both `check_new_episodes` and `regenerate_latest_post` in `src/main.ts` call this function, as does the preview web app. Edit the function there and the change applies everywhere.
+The body is assembled by `assemblePostBody` in `src/postUtils.ts`. It becomes the discussion comment, not the post text — the post itself only ever gets `title` and `url` (see `createEpisodePost`). Both `check_new_episodes` and `regenerate_latest_post` in `src/main.ts` call `assemblePostBody`, as does the preview web app. Edit the function there and the change applies everywhere.
 
 ### Add a new mod menu item
 
@@ -383,6 +387,7 @@ A React + Vite SPA that lets mods preview what Gemini will generate before deplo
 - **The Redis key names** — changing them invalidates deduplication state for all existing installs mid-operation.
 - **`export default Devvit`** in `main.ts` — required by the Devvit runtime entry point contract.
 - **The signatures of exported functions in `src/postUtils.ts`** — both the Devvit app and the preview web app call these functions. A signature change must be applied to both call sites simultaneously.
+- **The link post + stickied discussion comment pattern** in `createEpisodePost` — don't revert to a self post with an embedded video link. Reddit's post model cannot carry both a `url` (needed for the thumbnail/preview card) and a `text` body at the same time; see platform constraint #6 above.
 
 ---
 

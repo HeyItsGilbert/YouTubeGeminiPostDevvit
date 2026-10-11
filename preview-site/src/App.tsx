@@ -143,7 +143,6 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('yt_gemini_model') || 'gemini-3-flash-preview');
 
   // Advanced Settings (from Devvit App)
-  const [videoLinkLabel, setVideoLinkLabel] = useState(() => localStorage.getItem('yt_video_link_label') || 'Watch on YouTube');
   const [prependText, setPrependText] = useState(() => localStorage.getItem('yt_prepend_text') || '');
   const [appendText, setAppendText] = useState(() => localStorage.getItem('yt_append_text') || '');
   const [excludeKeywords, setExcludeKeywords] = useState(() => localStorage.getItem('yt_exclude_keywords') || '');
@@ -172,11 +171,10 @@ export default function App() {
     localStorage.setItem('yt_playlist_id', playlistId);
     localStorage.setItem('yt_system_prompt', systemPrompt);
     localStorage.setItem('yt_gemini_model', selectedModel);
-    localStorage.setItem('yt_video_link_label', videoLinkLabel);
     localStorage.setItem('yt_prepend_text', prependText);
     localStorage.setItem('yt_append_text', appendText);
     localStorage.setItem('yt_exclude_keywords', excludeKeywords);
-  }, [apiKey, playlistId, systemPrompt, selectedModel, videoLinkLabel, prependText, appendText, excludeKeywords]);
+  }, [apiKey, playlistId, systemPrompt, selectedModel, prependText, appendText, excludeKeywords]);
 
   // Check API access whenever the key changes (debounced 800 ms)
   useEffect(() => {
@@ -325,8 +323,6 @@ export default function App() {
       const finalBody = assemblePostBody(
         applyPlaceholders(prependText, video),
         rawBody,
-        applyPlaceholders(videoLinkLabel, video),
-        video.link,
         applyPlaceholders(appendText, video),
       );
 
@@ -603,17 +599,6 @@ export default function App() {
                         className="overflow-hidden space-y-4 pt-4"
                       >
                         <div className="space-y-2">
-                          <label htmlFor="video-link-label" className="text-[10px] font-bold uppercase tracking-widest opacity-70">Video Link Label</label>
-                          <input
-                            id="video-link-label"
-                            type="text"
-                            value={videoLinkLabel}
-                            onChange={(e) => setVideoLinkLabel(e.target.value)}
-                            className={`${FIELD_CLASS} px-4 py-2`}
-                          />
-                          <p className="text-[10px] opacity-60 italic">Placeholders: {'{Title}'}, {'{EpisodeNumber}'}</p>
-                        </div>
-                        <div className="space-y-2">
                           <label htmlFor="prepend-text" className="text-[10px] font-bold uppercase tracking-widest opacity-70">Prepend Text</label>
                           <textarea
                             id="prepend-text"
@@ -819,7 +804,7 @@ export default function App() {
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2 opacity-70">
                             <TypeIcon size={14} aria-hidden="true" />
-                            <span className="text-[10px] font-bold uppercase tracking-widest">Reddit Title</span>
+                            <span className="text-[10px] font-bold uppercase tracking-widest">Reddit Link Post Title</span>
                           </div>
                           <button
                             onClick={() => copyToClipboard(generatedPost.title, 'title')}
@@ -832,6 +817,7 @@ export default function App() {
                         <div className="text-xl font-bold leading-tight bg-white/5 p-4 rounded-xl border border-white/10">
                           {generatedPost.title}
                         </div>
+                        <p className="text-[10px] opacity-60 italic">Posted as a link post pointing at the video (gets Reddit's thumbnail preview). No separate video link is needed below — it's the post itself.</p>
                       </div>
 
                       {/* Body Preview */}
@@ -840,7 +826,7 @@ export default function App() {
                           <div className="flex items-center gap-2 opacity-70">
                             {previewMode === 'reddit' ? <Layout size={14} aria-hidden="true" /> : <FileText size={14} aria-hidden="true" />}
                             <span className="text-[10px] font-bold uppercase tracking-widest">
-                              {previewMode === 'reddit' ? 'Reddit Post Body' : 'Reddit Body (Markdown)'}
+                              {previewMode === 'reddit' ? 'Stickied Top Comment' : 'Comment Body (Markdown)'}
                             </span>
                           </div>
                           <button

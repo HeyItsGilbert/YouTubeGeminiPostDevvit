@@ -5,11 +5,22 @@ import { Devvit } from '@devvit/public-api';
 type RedditClient = Devvit.Context['reddit'];
 type RedisClient = Devvit.Context['redis'];
 type PostId = Parameters<RedditClient['setPostFlair']>[0]['postId'];
+type CommentId = Parameters<RedditClient['getCommentById']>[0];
+
+/** IDs of the post and its discussion comment created by createEpisodePost. */
+export interface EpisodePost {
+  postId: PostId;
+  commentId: CommentId;
+}
 
 // ----- Post creation --------------------------------------------------------
 
 /**
- * Submit a self post with the generated discussion body and its YouTube link.
+ * Submit a link post pointing at the YouTube video — this gets Reddit's
+ * native thumbnail/preview card, which a self post cannot. Reddit's post
+ * model is mutually exclusive between `url` (link posts) and `text`/
+ * `richtext` (self posts), so the generated discussion body is posted
+ * separately as a distinguished, stickied top-level comment.
  */
 export async function createEpisodePost(
   reddit: RedditClient,
@@ -17,16 +28,15 @@ export async function createEpisodePost(
   title: string,
   url: string,
   body: string
-) {
-  const text = !url || body.includes(`](${url})`)
-    ? body
-    : [body, `[Watch on YouTube](${url})`].filter(Boolean).join('\n\n');
+): Promise<EpisodePost> {
   const post = await reddit.submitPost({
     title,
     subredditName,
-    text,
+    url,
   });
-  return post;
+  const comment = await post.addComment({ text: body });
+  await comment.distinguish(true);
+  return { postId: post.id, commentId: comment.id };
 }
 
 // ----- Bot identity ---------------------------------------------------------
@@ -57,18 +67,20 @@ export async function applyBotFlair(
   }
 }
 
-// ----- Post editing ---------------------------------------------------------
+// ----- Comment editing -------------------------------------------------------
 
 /**
- * Edit the body text of an existing post.
+ * Edit the text of the discussion comment under an existing episode post.
+ * The post itself is a link post and has no editable body text — the
+ * generated discussion lives entirely in the stickied comment.
  */
 export async function updateEpisodePost(
   reddit: RedditClient,
-  postId: string,
+  commentId: CommentId,
   body: string
 ): Promise<void> {
-  const post = await reddit.getPostById(postId);
-  await post.edit({ text: body });
+  const comment = await reddit.getCommentById(commentId);
+  await comment.edit({ text: body });
 }
 
 // ----- Flair ----------------------------------------------------------------

@@ -21,6 +21,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   size and were eating into Devvit's per-invocation execution budget on
   subreddits with a large video history.
 
+### Changed
+
+- Episode submissions are now **link posts** pointing directly at the video
+  instead of self posts, restoring Reddit's native thumbnail/preview card.
+  The generated discussion body is posted separately as a distinguished,
+  stickied top comment, since Reddit's post model cannot carry both a `url`
+  and a text body on the same post. The `videoLinkLabel` setting is removed
+  — it existed only to embed a markdown video link into the old self-post
+  body, which is no longer needed now that the video itself is the post.
+  "Regenerate latest post" now edits the discussion comment instead of the
+  post; posts created before this change have no tracked comment and
+  cannot be regenerated.
+
 ## [0.1.9] - 2026-09-29
 
 ### Added

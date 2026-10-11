@@ -91,7 +91,7 @@ export function parseGeneratedResponse(fullText: string, fallbackTitle: string):
  *   {Link}          — full YouTube video URL
  *   {EpisodeNumber} — episode number, or empty string if not set
  *
- * Applied to: system prompt, prependText, appendText, videoLinkLabel.
+ * Applied to: system prompt, prependText, appendText.
  */
 export function applyPlaceholders(template: string, episode: EpisodeData): string {
   return template
@@ -134,21 +134,19 @@ export function isPrivateVideo(video: EpisodeData): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Assemble the final Reddit post body from its parts.
- * Mirrors the assembly order in the Devvit app's check_new_episodes job:
- *   [prependText, rawBody, videoLink, appendText]
+ * Assemble the final body text from its parts: [prependText, rawBody,
+ * appendText], filtering out empty parts and joining with double newlines.
  *
- * The video link is always included when a URL is available. A blank label
- * defaults to "Watch on YouTube". Empty/falsy parts are filtered out before
- * joining with double newlines.
+ * There is no video link to insert here: in this app, the video itself is
+ * the post's `url` (a genuine Reddit link post), which gives it Reddit's
+ * native thumbnail and preview card — embedding a markdown link into the
+ * body would just duplicate that. This body is posted as the discussion
+ * comment under the link post, not as post text.
  */
 export function assemblePostBody(
   prependText: string,
   rawBody: string,
-  videoLinkLabel: string,
-  videoUrl: string,
   appendText: string
 ): string {
-  const linkPart = videoUrl ? `[${videoLinkLabel || 'Watch on YouTube'}](${videoUrl})` : '';
-  return [prependText, rawBody, linkPart, appendText].filter(Boolean).join('\n\n');
+  return [prependText, rawBody, appendText].filter(Boolean).join('\n\n');
 }

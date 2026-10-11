@@ -32,6 +32,8 @@ export interface VideoRecord {
   status: 'posted' | 'excluded' | 'skipped' | 'private';
   /** Reddit post ID — only set when status is 'posted' */
   postId?: string;
+  /** Reddit comment ID holding the generated discussion body — only set when status is 'posted' */
+  commentId?: string;
   /** ISO 8601 timestamp when the record was written */
   processedAt: string;
 }

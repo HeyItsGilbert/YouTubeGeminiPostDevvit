@@ -76,14 +76,6 @@ Devvit.addSettings([
 
   // --- Reddit Post Options ---
   {
-    type: 'string',
-    name: 'videoLinkLabel',
-    label: 'Video Link Label (optional)',
-    helpText: 'A link to the YouTube video is always inserted between the generated body and Append Text. If set, this label becomes the link text, e.g. "Watch on YouTube" → [Watch on YouTube](url). Leave blank to use "Watch on YouTube".',
-    defaultValue: '',
-    scope: SettingScope.Installation,
-  },
-  {
     type: 'paragraph',
     name: 'prependText',
     label: 'Prepend Text (optional)',
@@ -294,7 +286,7 @@ const editPendingPostForm = Devvit.createForm(
       {
         type: 'paragraph',
         name: 'postBody',
-        label: 'Post Body',
+        label: 'Discussion Comment Body',
         defaultValue: data.body,
         required: true,
       },
@@ -350,7 +342,6 @@ Devvit.addSchedulerJob({
         systemPrompt,
         botFlairEmoji,
         botFlairText,
-        videoLinkLabel,
         prependText,
         appendText,
         flairName,
@@ -365,7 +356,6 @@ Devvit.addSchedulerJob({
         settings.get<string>('systemPrompt'),
         settings.get<string>('botFlairEmoji').then(v => v || ''),
         settings.get<string>('botFlairText').then(v => v || ''),
-        settings.get<string>('videoLinkLabel').then(v => v || ''),
         settings.get<string>('prependText').then(v => v || ''),
         settings.get<string>('appendText').then(v => v || ''),
         settings.get<string>('flairName').then(v => v || ''),
@@ -495,8 +485,6 @@ Devvit.addSchedulerJob({
       const body = assemblePostBody(
         applyPlaceholders(prependText, episode),
         rawBody,
-        applyPlaceholders(videoLinkLabel, episode),
-        episode.link,
         applyPlaceholders(appendText, episode),
       );
 
@@ -594,18 +582,18 @@ Devvit.addSchedulerJob({
       }
 
       // 7. Immediate post path (requireModApproval = false)
-      const post = await createEpisodePost(reddit, subredditName, title, episode.link, body);
-      log(`Created post ${post.id}`);
+      const { postId, commentId } = await createEpisodePost(reddit, subredditName, title, episode.link, body);
+      log(`Created post ${postId} with discussion comment ${commentId}`);
 
       // 8. Apply post flair, bot author flair, and pin the new post — these
-      //    are independent Reddit API calls that only need post.id, so run
+      //    are independent Reddit API calls that only need postId, so run
       //    them concurrently instead of one after another. applyFlair and
       //    applyBotFlair catch and log their own errors internally; a
       //    managePins() failure still propagates and is fatal, same as before.
       await Promise.all([
-        flairName ? applyFlair(reddit, subredditName, post.id, flairName) : Promise.resolve(),
+        flairName ? applyFlair(reddit, subredditName, postId, flairName) : Promise.resolve(),
         applyBotFlair(reddit, subredditName, botFlairEmoji, botFlairText),
-        managePins(reddit, redis, post.id),
+        managePins(reddit, redis, postId),
       ]);
 
       // 9. Persist to registry and keep legacy keys for backwards compatibility
@@ -613,11 +601,13 @@ Devvit.addSchedulerJob({
         setVideoRecord(redis, episode.guid, {
           title: episode.title,
           status: 'posted',
-          postId: post.id,
+          postId,
+          commentId,
           processedAt: new Date().toISOString(),
         }),
         redis.set('last_episode_guid', episode.guid),
-        redis.set('last_episode_post_id', post.id),
+        redis.set('last_episode_post_id', postId),
+        redis.set('last_episode_comment_id', commentId),
       ]);
 
       console.log(`[bot] Post complete: "${title}"`);
@@ -664,23 +654,25 @@ Devvit.addSchedulerJob({
       notificationMods = notificationModsSetting.split(',').map(u => u.trim()).filter(Boolean);
 
       console.log(`[bot] Posting pending episode: "${pending.title}"`);
-      const post = await createEpisodePost(reddit, subredditName, pending.title, pending.url, pending.body);
-      console.log(`[bot] Created post ${post.id}`);
+      const { postId, commentId } = await createEpisodePost(reddit, subredditName, pending.title, pending.url, pending.body);
+      console.log(`[bot] Created post ${postId} with discussion comment ${commentId}`);
 
       if (flairName) {
-        await applyFlair(reddit, subredditName, post.id, flairName);
+        await applyFlair(reddit, subredditName, postId, flairName);
       }
       await applyBotFlair(reddit, subredditName, botFlairEmoji, botFlairText);
-      await managePins(reddit, redis, post.id);
+      await managePins(reddit, redis, postId);
 
       await setVideoRecord(redis, pending.videoId, {
         title: pending.videoTitle,
         status: 'posted',
-        postId: post.id,
+        postId,
+        commentId,
         processedAt: new Date().toISOString(),
       });
       await redis.set('last_episode_guid', pending.videoId);
-      await redis.set('last_episode_post_id', post.id);
+      await redis.set('last_episode_post_id', postId);
+      await redis.set('last_episode_comment_id', commentId);
 
       // Clean up pending state
       await redis.del(REDIS_KEY_PENDING_POST);
@@ -873,11 +865,11 @@ Devvit.addSchedulerJob({
       const notificationModsSetting = (await settings.get<string>('notificationMods')) || '';
       notificationMods = notificationModsSetting.split(',').map(u => u.trim()).filter(Boolean);
 
-      const postId = await redis.get('last_episode_post_id');
+      const commentId = await redis.get('last_episode_comment_id');
       const videoId = await redis.get('last_episode_guid');
 
-      if (!postId || !videoId) {
-        console.error('[bot] No previous post found to regenerate.');
+      if (!commentId || !videoId) {
+        console.error('[bot] No previous post found to regenerate. If the last post predates this app version, it has no tracked comment — wait for the next new episode.');
         return;
       }
 
@@ -886,7 +878,6 @@ Devvit.addSchedulerJob({
       const systemPrompt = await settings.get<string>('systemPrompt');
       const botFlairEmoji = (await settings.get<string>('botFlairEmoji')) || '';
       const botFlairText = (await settings.get<string>('botFlairText')) || '';
-      const videoLinkLabel = (await settings.get<string>('videoLinkLabel')) || '';
       const prependText = (await settings.get<string>('prependText')) || '';
       const appendText = (await settings.get<string>('appendText')) || '';
 
@@ -908,14 +899,12 @@ Devvit.addSchedulerJob({
       const body = assemblePostBody(
         applyPlaceholders(prependText, episode),
         rawBody,
-        applyPlaceholders(videoLinkLabel, episode),
-        episode.link,
         applyPlaceholders(appendText, episode),
       );
 
-      await updateEpisodePost(reddit, postId, body);
+      await updateEpisodePost(reddit, commentId, body);
       await applyBotFlair(reddit, context.subredditName!, botFlairEmoji, botFlairText);
-      console.log(`[bot] Regenerated post ${postId}`);
+      console.log(`[bot] Regenerated comment ${commentId}`);
     } catch (err) {
       console.error(`[bot] Regeneration failed: ${err}`);
       const triggeredBy = await redis.get('regenerate_triggered_by');
@@ -932,7 +921,7 @@ Devvit.addSchedulerJob({
 
 Devvit.addMenuItem({
   label: 'Regenerate latest post',
-  description: 'Re-run Gemini for the last posted video and update the post body.',
+  description: 'Re-run Gemini for the last posted video and update its discussion comment.',
   location: 'subreddit',
   forUserType: 'moderator',
   onPress: async (_event, context) => {

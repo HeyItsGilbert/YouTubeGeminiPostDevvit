@@ -16,7 +16,7 @@ Issues & Requests: [HeyItsGilbert/YouTubeGeminiPostDevvit](https://github.com/He
 - **Monitors a YouTube playlist** every 30 minutes via a scheduled job
 - **Detects new videos** using a per-video Redis registry to track every seen video
 - **Calls Gemini** with video metadata and a mod-supplied system prompt to generate a discussion post
-- **Submits a self post** containing the generated text and a direct YouTube link
+- **Submits a link post** pointing directly at the video — gets Reddit's native thumbnail preview card — and posts the generated discussion text as a distinguished, stickied top comment
 - **Rotates the pin** — pins the new post and unpins the previous one
 - **Notifies the triggering mod by PM** if a manually triggered action fails
 - **Optional mod approval gate** — hold generated posts for review before publishing, with an optional auto-approve timer
@@ -54,7 +54,6 @@ All settings are configured per subreddit in the app's installation settings.
 | `systemPrompt`             | paragraph | No     | --                 | System prompt for Gemini. User message includes Title, Published, Link, and Description                                                      |
 | `botFlairEmoji`            | string    | No     | *(empty)*          | Emoji for the bot's author flair on this subreddit, e.g. `🎙️`                                                                               |
 | `botFlairText`             | string    | No     | *(empty)*          | Text for the bot's author flair, e.g. `Podcast Bot`. Combined with emoji if both are set                                                     |
-| `videoLinkLabel`           | string    | No     | *(empty)*          | Markdown link label for the required YouTube link between body and append text; defaults to `Watch on YouTube`                                |
 | `prependText`              | paragraph | No     | *(empty)*          | Text prepended to every generated post body (e.g. recurring links, disclaimers)                                                              |
 | `appendText`               | paragraph | No     | *(empty)*          | Text appended to every generated post body (e.g. footers, recurring links)                                                                   |
 | `flairName`                | string    | No     | *(empty)*          | Post flair to apply (exact name match, optional)                                                                                             |
