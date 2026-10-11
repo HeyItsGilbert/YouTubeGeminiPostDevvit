@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- "Reject pending video" mod action: throws away the pending post and records
+  the video as `rejected` so it is never posted.
+
+### Changed
+
+- "Cancel pending episode" is now "Discard pending post": the pending post is
+  thrown away and the video is treated as unseen on the next check. The other
+  approval actions are renamed "Publish pending post" and "Edit & publish
+  pending post".
+
+### Fixed
+
+- A posted video that later went private and then public again was posted a
+  second time. Posted videos now keep their registry record permanently.
+- While a post waited for mod approval, every 30-minute check called Gemini
+  again for the same video, and a newer video arriving meanwhile marked the
+  pending video as `skipped`. Pending videos are now recorded as `pending`,
+  and no generation happens while a post is pending.
+
 ## [0.1.10] - 2026-10-10
 
 ### Fixed

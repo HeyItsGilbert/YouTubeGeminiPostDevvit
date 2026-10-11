@@ -4,8 +4,10 @@ import { type VideoRecord } from './types.js';
 export const REGISTRY_KEY = 'video_registry';
 
 type RedisClient = {
+  hGet: (key: string, field: string) => Promise<string | undefined>;
   hGetAll: (key: string) => Promise<Record<string, string>>;
   hSet: (key: string, value: Record<string, string>) => Promise<number>;
+  hDel: (key: string, fields: string[]) => Promise<number>;
 };
 
 /**
@@ -30,13 +32,46 @@ export async function getAllVideoRecords(
   return records;
 }
 
+async function isPosted(redis: RedisClient, videoId: string): Promise<boolean> {
+  const json = await redis.hGet(REGISTRY_KEY, videoId);
+  if (!json) return false;
+  try {
+    return (JSON.parse(json) as VideoRecord).status === 'posted';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Write (or overwrite) a registry entry for a video.
+ *
+ * `posted` is terminal: a posted video's record can only be replaced by
+ * another `posted` record (a forced repost). Any other write is ignored and
+ * this returns false.
  */
 export async function setVideoRecord(
   redis: RedisClient,
   videoId: string,
   record: VideoRecord
-): Promise<void> {
+): Promise<boolean> {
+  if (record.status !== 'posted' && (await isPosted(redis, videoId))) {
+    return false;
+  }
   await redis.hSet(REGISTRY_KEY, { [videoId]: JSON.stringify(record) });
+  return true;
+}
+
+/**
+ * Remove a video's registry entry so the next check treats it as unseen.
+ * Posted records are never removed; returns false in that case.
+ */
+export async function deleteVideoRecord(
+  redis: RedisClient,
+  videoId: string
+): Promise<boolean> {
+  if (await isPosted(redis, videoId)) {
+    return false;
+  }
+  await redis.hDel(REGISTRY_KEY, [videoId]);
+  return true;
 }

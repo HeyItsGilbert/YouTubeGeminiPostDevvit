@@ -3,7 +3,7 @@ import { Devvit, SettingScope } from "@devvit/public-api";
 import { fetchPlaylistVideos, fetchYouTubeVideoById } from "./episodeChecker.js";
 import { generateEpisodePost } from "./llmClient.js";
 import { createEpisodePost, updateEpisodePost, applyBotFlair, applyFlair, managePins } from "./postManager.js";
-import { getAllVideoRecords, setVideoRecord } from "./videoRegistry.js";
+import { getAllVideoRecords, setVideoRecord, deleteVideoRecord } from "./videoRegistry.js";
 import { assemblePostBody, applyPlaceholders, matchesExclusionFilter, isPrivateVideo } from "./postUtils.js";
 
 Devvit.configure({
@@ -113,7 +113,7 @@ Devvit.addSettings([
     type: 'boolean',
     name: 'requireModApproval',
     label: 'Hold posts for mod approval',
-    helpText: 'When enabled, generated posts are queued in the mod inbox for review instead of being submitted immediately. Use "Post pending episode" or "Edit & Post pending episode" in Mod Tools to publish.',
+    helpText: 'When enabled, generated posts are queued in the mod inbox for review instead of being submitted immediately. Use "Publish pending post" or "Edit & publish pending post" in Mod Tools to publish.',
     defaultValue: false,
     scope: SettingScope.Installation,
   },
@@ -299,7 +299,7 @@ const editPendingPostForm = Devvit.createForm(
 
     const pendingJson = await redis.get(REDIS_KEY_PENDING_POST);
     if (!pendingJson) {
-      context.ui.showToast('No pending episode found. It may have already been posted or cancelled.');
+      context.ui.showToast('No pending post found. It may have already been published, discarded, or rejected.');
       return;
     }
 
@@ -400,9 +400,11 @@ Devvit.addSchedulerJob({
 
       // 4. Walk videos newest-first; find the first unregistered, non-excluded video.
       //    Private videos are tracked in the registry (status: 'private') so that when
-      //    they become public they are detected as new rather than skipped.  A formerly-
-      //    private video that goes public in the same run as a newer video is left with
-      //    its 'private' registry entry so it is picked up by the next run.
+      //    they become public they are detected as new rather than skipped. Only videos
+      //    with no record are marked private — a video that was already handled (e.g.
+      //    posted) keeps its status if it goes private. A formerly-private video that
+      //    goes public in the same run as a newer video is left with its 'private'
+      //    registry entry so it is picked up by the next run.
       const forceRepost = forceRepostFlag === '1';
       if (forceRepost) {
         await redis.del('force_repost');
@@ -412,10 +414,10 @@ Devvit.addSchedulerJob({
       let episodeToPost = null;
 
       for (const video of videos) {
-        // Track private videos in the registry so we can detect when they go public.
+        // Track never-seen private videos so we can detect when they go public.
         if (isPrivateVideo(video)) {
           const existingRecord = videoRecords[video.guid] ?? null;
-          if (!existingRecord || existingRecord.status !== 'private') {
+          if (!existingRecord) {
             log(`Registering private video ${video.guid} for future tracking`);
             await setVideoRecord(redis, video.guid, {
               title: video.title,
@@ -477,6 +479,15 @@ Devvit.addSchedulerJob({
       const episode = episodeToPost;
       log(`New video detected: "${episode.title}"`);
 
+      // A Pending Post blocks new generation until a mod resolves it, so the
+      // Gemini call isn't repeated every run while the post waits for approval.
+      // Force-repost always queues so mods can test the approval flow.
+      const holdForApproval = requireModApproval || forceRepost;
+      if (holdForApproval && await redis.get(REDIS_KEY_PENDING_POST)) {
+        log('A post is already pending mod approval. Skipping until it is published, discarded, or rejected.');
+        return;
+      }
+
       // 5. Generate post content via Gemini
       log('Calling Gemini API...');
       const { title, body: rawBody } = await generateEpisodePost(googleApiKey, episode, systemPrompt, geminiModel);
@@ -489,15 +500,7 @@ Devvit.addSchedulerJob({
       );
 
       // 6. Queue for mod approval, or post immediately
-      //    Force-repost always queues so mods can test the approval flow.
-      if (requireModApproval || forceRepost) {
-        // If there's already a pending post, don't overwrite it — the mod must act first
-        const existingPending = await redis.get(REDIS_KEY_PENDING_POST);
-        if (existingPending) {
-          log('A post is already pending mod approval. Skipping until it is posted or cancelled.');
-          return;
-        }
-
+      if (holdForApproval) {
         const pendingPost: PendingPost = {
           title,
           body,
@@ -507,6 +510,11 @@ Devvit.addSchedulerJob({
           generatedAt: new Date().toISOString(),
         };
         await redis.set(REDIS_KEY_PENDING_POST, JSON.stringify(pendingPost));
+        await setVideoRecord(redis, episode.guid, {
+          title: episode.title,
+          status: 'pending',
+          processedAt: new Date().toISOString(),
+        });
 
         // Schedule auto-approve if a window is configured
         if (autoApproveWindowMinutes > 0) {
@@ -532,9 +540,10 @@ Devvit.addSchedulerJob({
           `**Video:** ${episode.link}`,
           ``,
           `Use **Mod Tools** on r/${subredditName} to take action:`,
-          `- **"Post pending episode"** — publish as-is`,
-          `- **"Edit & Post pending episode"** — edit title/body before publishing`,
-          `- **"Cancel pending episode"** — discard this post`,
+          `- **"Publish pending post"** — publish as-is`,
+          `- **"Edit & publish pending post"** — edit title/body before publishing`,
+          `- **"Discard pending post"** — throw this post away; the video is treated as unseen on the next check`,
+          `- **"Reject pending video"** — never post this video`,
           autoApproveNote,
         ].join('\n');
 
@@ -639,8 +648,8 @@ Devvit.addSchedulerJob({
     try {
       const pendingJson = await redis.get(REDIS_KEY_PENDING_POST);
       if (!pendingJson) {
-        // Already posted or cancelled — nothing to do
-        console.log('[bot] post_pending_episode: no pending post found (already posted or cancelled).');
+        // Already published, discarded, or rejected — nothing to do
+        console.log('[bot] post_pending_episode: no pending post found (already published, discarded, or rejected).');
         return;
       }
 
@@ -687,7 +696,7 @@ Devvit.addSchedulerJob({
         notificationMods,
         triggeredBy,
         'Episode post failed',
-        `Failed to post the pending episode on r/${context.subredditName} with error:\n\n    ${err}\n\nThe episode content is still saved. Try using "Post pending episode" in Mod Tools to retry.`,
+        `Failed to post the pending episode on r/${context.subredditName} with error:\n\n    ${err}\n\nThe episode content is still saved. Try using "Publish pending post" in Mod Tools to retry.`,
       );
     }
   },
@@ -787,19 +796,19 @@ Devvit.addMenuItem({
 });
 
 // ---------------------------------------------------------------------------
-// Pending episode — mod approval actions
+// Pending post — mod approval actions
 // ---------------------------------------------------------------------------
 
 Devvit.addMenuItem({
-  label: 'Post pending episode',
-  description: 'Publish the queued episode post as-is.',
+  label: 'Publish pending post',
+  description: 'Publish the pending post as-is.',
   location: 'subreddit',
   forUserType: 'moderator',
   onPress: async (_event, context) => {
     const { redis, scheduler } = context;
     const pendingJson = await redis.get(REDIS_KEY_PENDING_POST);
     if (!pendingJson) {
-      context.ui.showToast('No episode is pending approval.');
+      context.ui.showToast('No post is pending approval.');
       return;
     }
     // Cancel any scheduled auto-approve job before posting now
@@ -809,19 +818,19 @@ Devvit.addMenuItem({
       await redis.del(REDIS_KEY_PENDING_POST_JOB_ID);
     }
     await scheduler.runJob({ name: 'post_pending_episode', runAt: new Date() });
-    context.ui.showToast('Posting episode...');
+    context.ui.showToast('Publishing pending post...');
   },
 });
 
 Devvit.addMenuItem({
-  label: 'Edit & Post pending episode',
-  description: 'Edit the queued episode title and body before publishing.',
+  label: 'Edit & publish pending post',
+  description: 'Edit the pending post title and discussion comment before publishing.',
   location: 'subreddit',
   forUserType: 'moderator',
   onPress: async (_event, context) => {
     const pendingJson = await context.redis.get(REDIS_KEY_PENDING_POST);
     if (!pendingJson) {
-      context.ui.showToast('No episode is pending approval.');
+      context.ui.showToast('No post is pending approval.');
       return;
     }
     const pending: PendingPost = JSON.parse(pendingJson);
@@ -829,25 +838,60 @@ Devvit.addMenuItem({
   },
 });
 
+/**
+ * Remove the Pending Post and its auto-approve timer. Returns the removed
+ * Pending Post, or null if none was pending.
+ */
+async function clearPendingPost(
+  redis: Devvit.Context['redis'],
+  scheduler: Devvit.Context['scheduler'],
+): Promise<PendingPost | null> {
+  const pendingJson = await redis.get(REDIS_KEY_PENDING_POST);
+  if (!pendingJson) {
+    return null;
+  }
+  const existingJobId = await redis.get(REDIS_KEY_PENDING_POST_JOB_ID);
+  if (existingJobId) {
+    try { await scheduler.cancelJob(existingJobId); } catch { /* already fired */ }
+    await redis.del(REDIS_KEY_PENDING_POST_JOB_ID);
+  }
+  await redis.del(REDIS_KEY_PENDING_POST);
+  return JSON.parse(pendingJson) as PendingPost;
+}
+
 Devvit.addMenuItem({
-  label: 'Cancel pending episode',
-  description: 'Discard the queued episode post without publishing.',
+  label: 'Discard pending post',
+  description: 'Throw away the pending post. The video is treated as unseen on the next check.',
   location: 'subreddit',
   forUserType: 'moderator',
   onPress: async (_event, context) => {
-    const { redis, scheduler } = context;
-    const pendingJson = await redis.get(REDIS_KEY_PENDING_POST);
-    if (!pendingJson) {
-      context.ui.showToast('No pending episode to cancel.');
+    const pending = await clearPendingPost(context.redis, context.scheduler);
+    if (!pending) {
+      context.ui.showToast('No pending post to discard.');
       return;
     }
-    const existingJobId = await redis.get(REDIS_KEY_PENDING_POST_JOB_ID);
-    if (existingJobId) {
-      try { await scheduler.cancelJob(existingJobId); } catch (_) { /* already fired */ }
-      await redis.del(REDIS_KEY_PENDING_POST_JOB_ID);
+    await deleteVideoRecord(context.redis, pending.videoId);
+    context.ui.showToast('Pending post discarded.');
+  },
+});
+
+Devvit.addMenuItem({
+  label: 'Reject pending video',
+  description: 'Throw away the pending post and never post this video.',
+  location: 'subreddit',
+  forUserType: 'moderator',
+  onPress: async (_event, context) => {
+    const pending = await clearPendingPost(context.redis, context.scheduler);
+    if (!pending) {
+      context.ui.showToast('No pending video to reject.');
+      return;
     }
-    await redis.del(REDIS_KEY_PENDING_POST);
-    context.ui.showToast('Pending episode cancelled.');
+    await setVideoRecord(context.redis, pending.videoId, {
+      title: pending.videoTitle,
+      status: 'rejected',
+      processedAt: new Date().toISOString(),
+    });
+    context.ui.showToast(`Rejected "${pending.videoTitle}". It will not be posted.`);
   },
 });
 

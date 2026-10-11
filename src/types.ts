@@ -29,7 +29,7 @@ export interface VideoRecord {
   /** Video title at the time of processing */
   title: string;
   /** Outcome of processing this video */
-  status: 'posted' | 'excluded' | 'skipped' | 'private';
+  status: 'posted' | 'pending' | 'excluded' | 'rejected' | 'skipped' | 'private';
   /** Reddit post ID — only set when status is 'posted' */
   postId?: string;
   /** Reddit comment ID holding the generated discussion body — only set when status is 'posted' */

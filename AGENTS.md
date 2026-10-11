@@ -30,7 +30,9 @@ src/
                     assemblePostBody. No Devvit or browser dependencies — safe to
                     import from both runtimes.
   videoRegistry.ts  Redis hash-backed registry of every video the bot has seen.
-                    Stores status (posted/excluded/skipped) and postId/commentId per video ID.
+                    Stores status (posted/pending/excluded/rejected/skipped/private) and
+                    postId/commentId per video ID. Posted records are terminal: never
+                    overwritten (except by a forced repost) or deleted.
   types.ts          Shared interfaces: EpisodeData, GeneratedPost, VideoRecord.
 
 devvit.json         App manifest. Declares entry point and allowed HTTP domains.
@@ -70,10 +72,15 @@ check_new_episodes job (src/main.ts)
   ├─ 4. For each video newest-first:                            videoRegistry.ts
   │       a. Check force_repost flag — if set, skip registry for first video only
   │       b. Look up videoRecords[video.guid] (pre-fetched) → skip if already registered
+  │          (any status except 'private'; a private video is only recorded if unregistered)
   │       c. matchesExclusionFilter(title, excludeKeywords)     episodeChecker.ts
   │            → if matched: setVideoRecord(..., 'excluded'), continue
   │       d. First unregistered non-excluded video = episodeToPost
   │          Remaining unregistered videos → setVideoRecord(..., 'skipped')
+  │
+  ├─ 4½. If requireModApproval (or force_repost) and `pending_post` exists → return
+  │       (no Gemini call while a post awaits approval). Otherwise, on the approval
+  │       path, the queued video is recorded as 'pending' after step 6.
   │
   ├─ 5. generateEpisodePost(apiKey, episode, systemPrompt, model)  llmClient.ts
   │       POST OpenAI-compat endpoint → parse first line = title, rest = body
@@ -139,7 +146,7 @@ Platform-agnostic pure utilities. **No Devvit APIs, no browser-only globals.** S
 | `buildUserMessage` | `(episode) → string` | Assembles the user-turn message sent to Gemini. Conditionally includes `Episode Number` and `Link` fields. |
 | `parseGeneratedResponse` | `(fullText, fallbackTitle) → GeneratedPost` | Splits raw Gemini output into title (first non-empty line) and body (everything after). |
 | `matchesExclusionFilter` | `(title, keywords) → boolean` | Returns true if the title contains any comma-separated keyword (case-insensitive substring match). Used by `main.ts` for the exclusion keyword setting and by the preview app's filter UI. |
-| `isPrivateVideo` | `(video) → boolean` | Returns true if the video title is exactly `"Private video"` — YouTube's placeholder for private/deleted content. Used by `episodeChecker.ts` to filter at the fetch layer. |
+| `isPrivateVideo` | `(video) → boolean` | Returns true if the video title is exactly `"Private video"` — YouTube's placeholder for private/deleted content. Used by `main.ts` in `check_new_episodes` to record such videos with status `private`. |
 | `assemblePostBody` | `(prependText, rawBody, appendText) → string` | Joins the parts with `\n\n`, filtering out empty ones. No video link is inserted — in this app the video is the post's `url`, not text in the body. |
 
 **Rule:** Keep this file free of platform-specific imports. If a function needs to grow a Devvit or browser dependency, move it out of `postUtils.ts` into the appropriate module instead.
@@ -152,12 +159,12 @@ Platform-agnostic pure utilities. **No Devvit APIs, no browser-only globals.** S
 
 | Function | Signature | Purpose |
 |---|---|---|
-| `fetchPlaylistVideos` | `(apiKey, playlistId) → Promise<EpisodeData[]>` | Paginates through the entire playlist (50 items per page) via `nextPageToken`, sorts the combined result by `publishedAt` descending, filters out private/deleted videos via `isPrivateVideo`, and returns the rest as an array. Delegates UC→UU conversion to `resolvePlaylistId` in `postUtils.ts`. |
+| `fetchPlaylistVideos` | `(apiKey, playlistId) → Promise<EpisodeData[]>` | Paginates through the entire playlist (50 items per page) via `nextPageToken`, sorts the combined result by `publishedAt` descending, and returns every item, including private/deleted placeholders. Delegates UC→UU conversion to `resolvePlaylistId` in `postUtils.ts`. |
 | `fetchYouTubeVideoById` | `(apiKey, videoId) → Promise<EpisodeData \| null>` | Used by the regeneration flow when the video ID is already known |
 
 **Key detail:** Each playlist page returns up to 50 items in API order, which is not necessarily chronological — the module paginates through every page before sorting the full combined result by `publishedAt`. The Uploads playlist (`UU...`) is always newest-first from the API, making the sort a no-op, but it is kept for correctness when a non-uploads playlist is used. As a playlist's video count grows, this means more pages (and more time) per run — see the `check_new_episodes` flow above for how the registry lookup avoids a matching per-video cost.
 
-**Private video filtering:** Videos with the exact title `"Private video"` (YouTube's placeholder for private/deleted content) are automatically filtered out at the fetch layer using `isPrivateVideo` from `postUtils.ts`. They never reach the processing loop and are not recorded in the video registry.
+**Private video tracking:** Videos with the exact title `"Private video"` (YouTube's placeholder for private/deleted content) are returned by the fetch layer. `check_new_episodes` records them in the video registry with status `private` and does not post them. When such a video later becomes public, it is treated as new. If a newer video is posted in the same run, the formerly-private one keeps its `private` record and is picked up on the next run.
 
 ---
 
@@ -218,7 +225,7 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 - Registers the `check_new_episodes` scheduler job (the core pipeline)
 - Registers the `regenerate_latest_post` scheduler job
 - Registers the `AppInstall`/`AppUpgrade` trigger (schedules the cron, cancels any previous job first for idempotency — fires on both initial install and every subsequent version upgrade, since dynamically-created cron jobs are not guaranteed to survive every deploy)
-- Registers five mod menu items: "Set Google API Key", "Set pin slot", "Check for new videos", "Force post latest video (testing)", and "Regenerate latest post"
+- Registers mod menu items: "Set Google API Key", "Set pin slot", "Check for new videos", "Force post latest video (testing)", "Regenerate latest post", and the approval actions "Publish pending post", "Edit & publish pending post", "Discard pending post" (deletes the pending post and the video's `pending` record so the next check treats it as unseen), and "Reject pending video" (deletes the pending post and records the video as `rejected`)
 - Exports `default Devvit` (required by Devvit platform)
 
 ---
@@ -239,7 +246,7 @@ All settings use `SettingScope.Installation`. Each subreddit configures its own 
 | `appendText` | paragraph | No | `''` | Appended to final post body |
 | `flairName` | string | No | `''` | Exact post flair template name (case-insensitive match) |
 | `notificationMods` | string | No | `''` | Comma-separated Reddit usernames to notify when a post is queued (e.g. `"alice, bob"`). Each user receives a PM. When blank, notification goes to the general mod inbox via `createModInboxConversation`. Only applies when `requireModApproval` is true. |
-| `requireModApproval` | boolean | No | `false` | When true, generated posts are stored in Redis and a notification is sent instead of posting immediately. Mods use the "Post pending episode" or "Edit & Post pending episode" menu items to publish. |
+| `requireModApproval` | boolean | No | `false` | When true, generated posts are stored in Redis, the video is recorded as `pending`, and a notification is sent instead of posting immediately. While a post is pending, checks skip generation entirely. Mods use "Publish pending post" or "Edit & publish pending post" to publish, "Discard pending post" to throw it away, or "Reject pending video" to never post the video. |
 | `autoApproveWindowMinutes` | number | No | `0` | Only applies when `requireModApproval` is true. When > 0, schedules a `post_pending_episode` job to auto-publish after this many minutes if no mod acts first. Set to `0` for indefinite hold. |
 
 The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored directly in Redis via the "Set Google API Key" mod menu form, keeping it out of the visible Devvit settings UI.
@@ -251,7 +258,7 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | Key | Type | Written by | Read by | Purpose |
 |---|---|---|---|---|
 | `google_api_key` | string | `apiKeyForm` handler | `check_new_episodes`, `regenerate_latest_post` | Google API key for both YouTube and Gemini |
-| `video_registry` | hash | `check_new_episodes` (step 4, 11) | `check_new_episodes` (step 4) | Hash of videoId → `VideoRecord` JSON. Tracks every seen video with status `posted`, `excluded`, `skipped`, or `private`. |
+| `video_registry` | hash | `check_new_episodes` (step 4, 11), `post_pending_episode`, "Discard pending post" / "Reject pending video" menu items | `check_new_episodes` (step 4) | Hash of videoId → `VideoRecord` JSON. Tracks every seen video with status `posted`, `pending`, `excluded`, `rejected`, `skipped`, or `private`. `posted` is terminal: `setVideoRecord` ignores non-`posted` writes over it and `deleteVideoRecord` refuses to remove it. |
 | `last_episode_guid` | string | `check_new_episodes` (step 11), `post_pending_episode` | `regenerate_latest_post` | Legacy: YouTube video ID of last posted video — kept for backwards compatibility |
 | `last_episode_post_id` | string | `check_new_episodes` (step 11), `post_pending_episode` | — | Reddit post ID of the currently pinned link post |
 | `last_episode_comment_id` | string | `check_new_episodes` (step 11), `post_pending_episode` | `regenerate_latest_post` | Reddit comment ID of the discussion comment under the currently pinned post. Posts created before this field existed have no tracked comment and cannot be regenerated. |
@@ -260,8 +267,8 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | `force_repost` | string (`'1'`) | "Force post latest video" menu item | `check_new_episodes` (step 4a) | One-shot flag: skip registry check for the newest video on the next run. Deleted immediately when read. |
 | `check_triggered_by` | string | "Check for new videos" / "Force post" menu items | `check_new_episodes` error handler, `post_pending_episode` error handler | Username of the mod who manually triggered; used to send a PM on failure |
 | `regenerate_triggered_by` | string | "Regenerate latest post" menu item | `regenerate_latest_post` error handler | Username of the mod who triggered regeneration; used to send a PM on failure |
-| `pending_post` | string (JSON) | `check_new_episodes` (approval gate path) | `post_pending_episode`, "Post pending episode" / "Edit & Post" / "Cancel" menu items | Serialised `PendingPost` object holding generated title, body, url, videoId, videoTitle, and generatedAt timestamp. Deleted when the post goes live or is cancelled. |
-| `pending_post_job_id` | string | `check_new_episodes` (when `autoApproveWindowMinutes > 0`) | "Post pending episode" / "Edit & Post" / "Cancel" menu items | Scheduler job ID for the auto-approve timer. Cancelled and deleted when a mod acts first. |
+| `pending_post` | string (JSON) | `check_new_episodes` (approval gate path) | `check_new_episodes` (skips generation while set), `post_pending_episode`, "Publish" / "Edit & publish" / "Discard" / "Reject" menu items | Serialised `PendingPost` object holding generated title, body, url, videoId, videoTitle, and generatedAt timestamp. Deleted when the post is published, discarded, or rejected. |
+| `pending_post_job_id` | string | `check_new_episodes` (when `autoApproveWindowMinutes > 0`) | "Publish" / "Edit & publish" / "Discard" / "Reject" menu items | Scheduler job ID for the auto-approve timer. Cancelled and deleted when a mod acts first. |
 
 **Resetting state:** To force a repost of the latest video, use the "Force post latest video (testing)" mod menu item. To manually clear a video from the registry, delete its field from the `video_registry` hash in Redis.
 
@@ -272,7 +279,7 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | Job name | Schedule | Trigger |
 |---|---|---|
 | `check_new_episodes` | `*/30 * * * *` (cron) | Scheduled at `AppInstall` and `AppUpgrade`. Also triggered immediately by "Check for new videos" mod menu item via `runAt: new Date()` |
-| `post_pending_episode` | No fixed schedule | Triggered immediately by "Post pending episode" and "Edit & Post pending episode" menu items. Also scheduled at `now + autoApproveWindowMinutes` by `check_new_episodes` when `requireModApproval` is true and a window is configured. |
+| `post_pending_episode` | No fixed schedule | Triggered immediately by "Publish pending post" and "Edit & publish pending post" menu items. Also scheduled at `now + autoApproveWindowMinutes` by `check_new_episodes` when `requireModApproval` is true and a window is configured. |
 | `regenerate_latest_post` | No fixed schedule | Only triggered by "Regenerate latest post" mod menu item via `runAt: new Date()` |
 
 The `AppInstall`/`AppUpgrade` trigger cancels any existing job ID before scheduling a new one, making reinstalls and version upgrades idempotent. This runs on *every* version upgrade (not just first install) because Devvit does not guarantee dynamically-created cron jobs survive each deploy — without the `AppUpgrade` leg, a mod updating the app version could silently lose the recurring job with no automatic recovery.

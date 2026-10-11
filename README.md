@@ -25,8 +25,9 @@ Moderator menu items let mods trigger an immediate check ("Check for new
 videos"), force a re-post of the latest video bypassing deduplication ("Force
 post latest video (testing)"), or regenerate the body of the latest post
 ("Regenerate latest post"). When mod approval is enabled, mods can publish
-as-is ("Post pending episode"), edit before publishing ("Edit & Post pending
-episode"), or discard ("Cancel pending episode"). If any manual action fails,
+as-is ("Publish pending post"), edit before publishing ("Edit & publish pending
+post"), throw the post away and let the next check treat the video as unseen
+("Discard pending post"), or never post the video ("Reject pending video"). If any manual action fails,
 the triggering mod receives a Reddit PM with the error details. Scheduled
 (cron) runs are self-healing — state is only persisted on success, so the next
 30-minute tick retries automatically.
