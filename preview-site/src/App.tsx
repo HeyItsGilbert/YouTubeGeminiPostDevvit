@@ -25,38 +25,14 @@ import {
   Filter
 } from 'lucide-react';
 import { motion, AnimatePresence, MotionConfig } from 'motion/react';
-import { EpisodeData, GeneratedPost } from '@shared/types';
+import type { EpisodeData, GeneratedPost, GeminiModel, ThinkingLevel } from '@shared/types';
 import { resolvePlaylistId, buildUserMessage, parseGeneratedResponse, assemblePostBody, applyPlaceholders, matchesExclusionFilter, isPrivateVideo } from '@shared/postUtils';
+import { GEMINI_MODELS, GEMINI_MODELS_FETCHED_AT, DEFAULT_GEMINI_MODEL, describeModel, describeThinkingLevel, resolveThinkingLevel, thinkingLevelsFor } from '@shared/geminiModels';
 
 const DEFAULT_SYSTEM_PROMPT = `You are a helpful assistant that generates Reddit discussion posts for a podcast.
 The first line of your output should be a catchy, relevant title for the Reddit post.
 The rest of your output should be the body of the post, including a summary of the episode and some discussion prompts.
 Be engaging and use Markdown formatting.`;
-
-type ModelOption = { id: string; name: string };
-
-// Fallback list — used until a key loads the live model list, or if that fetch fails.
-const FALLBACK_MODELS: ModelOption[] = [
-  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (Latest)' },
-  { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash-Lite' },
-  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (Advanced)' },
-  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
-  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
-  { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
-];
-
-// The API exposes no speed or price field, so we derive a relative tier from the
-// model id. Lower rank = faster/cheaper, so it sorts first and gets recommended.
-// `cost` is a relative indicator ($–$$$), not an absolute price.
-type ModelTier = { rank: number; speed: string; cost: string };
-
-function classifyModel(id: string): ModelTier {
-  const lower = id.toLowerCase();
-  if (lower.includes('flash-lite') || lower.includes('lite')) return { rank: 0, speed: 'Fastest', cost: '$' };
-  if (lower.includes('flash')) return { rank: 1, speed: 'Fast', cost: '$$' };
-  if (lower.includes('pro')) return { rank: 3, speed: 'Slower', cost: '$$$' };
-  return { rank: 2, speed: '', cost: '$$' };
-}
 
 // Shared field styling — visible focus ring (WCAG 2.4.7) + legible placeholder (WCAG 1.4.3).
 const FIELD_CLASS =
@@ -68,25 +44,16 @@ const FIELD_CLASS =
 
 type ApiStatus = 'idle' | 'checking' | 'ok' | 'error';
 
-// Doubles as the Gemini access check: a non-null result means the key works.
-// Filters to chat models that support generateContent so the dropdown stays clean.
-async function fetchGeminiModels(apiKey: string, signal: AbortSignal): Promise<ModelOption[] | null> {
+// Gemini access check: listing models costs no generation quota.
+async function checkGeminiAccess(apiKey: string, signal: AbortSignal): Promise<boolean> {
   try {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
       { signal }
     );
-    if (!res.ok) return null;
-    const data = await res.json();
-    const models: ModelOption[] = (data.models ?? [])
-      .filter((m: any) =>
-        m.supportedGenerationMethods?.includes('generateContent') &&
-        String(m.name).startsWith('models/gemini')
-      )
-      .map((m: any) => ({ id: String(m.name).replace(/^models\//, ''), name: m.displayName || m.name }));
-    return models.length ? models : null;
+    return res.ok;
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -140,7 +107,10 @@ export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('yt_gemini_api_key') || '');
   const [playlistId, setPlaylistId] = useState(() => localStorage.getItem('yt_playlist_id') || '');
   const [systemPrompt, setSystemPrompt] = useState(() => localStorage.getItem('yt_system_prompt') || DEFAULT_SYSTEM_PROMPT);
-  const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('yt_gemini_model') || 'gemini-3-flash-preview');
+  const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('yt_gemini_model') || DEFAULT_GEMINI_MODEL);
+  // The stored pick survives model switches; models that don't accept it use their default.
+  const [thinkingLevel, setThinkingLevel] = useState(() => localStorage.getItem('yt_thinking_level') || '');
+  const effectiveThinkingLevel = resolveThinkingLevel(selectedModel, thinkingLevel);
 
   // Advanced Settings (from Devvit App)
   const [prependText, setPrependText] = useState(() => localStorage.getItem('yt_prepend_text') || '');
@@ -158,8 +128,7 @@ export default function App() {
   const [fetchedVideo, setFetchedVideo] = useState<EpisodeData | null>(null);
   const [generatedPost, setGeneratedPost] = useState<GeneratedPost | null>(null);
   const [copied, setCopied] = useState<'title' | 'body' | 'model' | null>(null);
-  const [availableModels, setAvailableModels] = useState<ModelOption[]>(FALLBACK_MODELS);
-  const [modelsAreLive, setModelsAreLive] = useState(false);
+  const [availableModels, setAvailableModels] = useState<readonly GeminiModel[]>(GEMINI_MODELS);
   const [geminiStatus, setGeminiStatus] = useState<ApiStatus>('idle');
   const [youtubeStatus, setYoutubeStatus] = useState<ApiStatus>('idle');
   const [slowWarning, setSlowWarning] = useState(false);
@@ -171,33 +140,30 @@ export default function App() {
     localStorage.setItem('yt_playlist_id', playlistId);
     localStorage.setItem('yt_system_prompt', systemPrompt);
     localStorage.setItem('yt_gemini_model', selectedModel);
+    localStorage.setItem('yt_thinking_level', thinkingLevel);
     localStorage.setItem('yt_prepend_text', prependText);
     localStorage.setItem('yt_append_text', appendText);
     localStorage.setItem('yt_exclude_keywords', excludeKeywords);
-  }, [apiKey, playlistId, systemPrompt, selectedModel, prependText, appendText, excludeKeywords]);
+  }, [apiKey, playlistId, systemPrompt, selectedModel, thinkingLevel, prependText, appendText, excludeKeywords]);
 
   // Check API access whenever the key changes (debounced 800 ms)
   useEffect(() => {
     if (!apiKey || apiKey.length < 20) {
       setGeminiStatus('idle');
       setYoutubeStatus('idle');
-      setAvailableModels(FALLBACK_MODELS);
-      setModelsAreLive(false);
       return;
     }
     setGeminiStatus('checking');
     setYoutubeStatus('checking');
     const controller = new AbortController();
     const timer = setTimeout(async () => {
-      const [models, youtube] = await Promise.all([
-        fetchGeminiModels(apiKey, controller.signal),
+      const [gemini, youtube] = await Promise.all([
+        checkGeminiAccess(apiKey, controller.signal),
         checkYouTubeAccess(apiKey, controller.signal),
       ]);
       if (!controller.signal.aborted) {
-        setGeminiStatus(models ? 'ok' : 'error');
+        setGeminiStatus(gemini ? 'ok' : 'error');
         setYoutubeStatus(youtube ? 'ok' : 'error');
-        setAvailableModels(models ?? FALLBACK_MODELS);
-        setModelsAreLive(Boolean(models));
       }
     }, 800);
     return () => {
@@ -206,16 +172,13 @@ export default function App() {
     };
   }, [apiKey]);
 
-  // Sort fastest/cheapest first so the recommended model leads the dropdown.
-  // Keep the selected model present even if it's not in the live list.
-  const sortedModels = useMemo(() => {
-    const list = [...availableModels];
-    if (!list.some(m => m.id === selectedModel)) {
-      list.push({ id: selectedModel, name: selectedModel });
-    }
-    return list.sort((a, b) => classifyModel(a.id).rank - classifyModel(b.id).rank);
-  }, [availableModels, selectedModel]);
-  const recommendedId = sortedModels[0]?.id;
+  // The catalog is sorted fastest/cheapest first, so the recommended model leads.
+  // Keep the selected model present even if a newer build dropped it.
+  const sortedModels = useMemo(() =>
+    availableModels.some(m => m.id === selectedModel)
+      ? availableModels
+      : [...availableModels, { id: selectedModel, name: selectedModel, thinkingLevels: [] }],
+  [availableModels, selectedModel]);
 
   const loadPlaylistVideos = async () => {
     if (!apiKey || !playlistId) {
@@ -302,14 +265,22 @@ export default function App() {
     const slowTimer = setTimeout(() => setSlowWarning(true), 25_000);
     try {
       // Lazy-load the Gemini SDK so it stays out of the initial bundle.
-      const { GoogleGenAI } = await import('@google/genai');
+      const { GoogleGenAI, ThinkingLevel: GenAIThinkingLevel } = await import('@google/genai');
       const ai = new GoogleGenAI({ apiKey });
+
+      // Mirrors the bot's reasoning_effort: 'none' is a zero thinking budget on the native API.
+      const thinkingConfig = effectiveThinkingLevel === undefined
+        ? undefined
+        : effectiveThinkingLevel === 'none'
+          ? { thinkingBudget: 0 }
+          : { thinkingLevel: GenAIThinkingLevel[effectiveThinkingLevel.toUpperCase() as Uppercase<Exclude<ThinkingLevel, 'none'>>] };
 
       const response = await ai.models.generateContent({
         model: selectedModel,
         contents: buildUserMessage(video),
         config: {
           systemInstruction: applyPlaceholders(systemPrompt, video),
+          thinkingConfig,
         }
       });
 
@@ -332,12 +303,12 @@ export default function App() {
     } catch (err: any) {
       console.error(err);
       const msg = String(err?.message || '');
-      // ListModels can advertise models that 404 on generate (retired snapshots).
+      // The catalog can list models that 404 on generate (retired since the build).
       // Drop the dead model and fall through to the next-fastest one.
       if (/no longer available|not[_ ]?found|\b404\b/i.test(msg)) {
         const remaining = availableModels.filter(m => m.id !== selectedModel);
-        const pool = remaining.length ? remaining : FALLBACK_MODELS;
-        const nextBest = [...pool].sort((a, b) => classifyModel(a.id).rank - classifyModel(b.id).rank)[0];
+        const pool = remaining.length ? remaining : GEMINI_MODELS;
+        const nextBest = pool[0];
         setAvailableModels(pool);
         if (nextBest) setSelectedModel(nextBest.id);
         setError(
@@ -524,45 +495,6 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Model Selection */}
-                <div className="space-y-2">
-                  <label htmlFor="model-select" className="text-xs font-semibold opacity-70">Gemini Model</label>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <select
-                        id="model-select"
-                        value={selectedModel}
-                        onChange={(e) => setSelectedModel(e.target.value)}
-                        aria-describedby="model-hint"
-                        className={`${FIELD_CLASS} pl-4 pr-10 py-3 appearance-none cursor-pointer`}
-                      >
-                        {sortedModels.map(m => {
-                          const tier = classifyModel(m.id);
-                          const meta = [tier.speed, tier.cost].filter(Boolean).join(' · ');
-                          return (
-                            <option key={m.id} value={m.id}>
-                              {m.name}{meta ? ` — ${meta}` : ''}{m.id === recommendedId ? ' · Recommended' : ''}
-                            </option>
-                          );
-                        })}
-                      </select>
-                      <ChevronDown size={16} className="absolute right-4 top-1/2 -translate-y-1/2 opacity-40 pointer-events-none" aria-hidden="true" />
-                    </div>
-                    <button
-                      onClick={() => copyToClipboard(selectedModel, 'model')}
-                      className="bg-ink text-white rounded-xl px-4 py-3 hover:bg-ink/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 focus-visible:ring-offset-2 transition-colors flex items-center justify-center min-w-[48px]"
-                      aria-label="Copy model ID"
-                    >
-                      {copied === 'model' ? <Check size={18} className="text-emerald-400" aria-hidden="true" /> : <Copy size={18} aria-hidden="true" />}
-                    </button>
-                  </div>
-                  <p id="model-hint" className="text-[11px] text-ink/60">
-                    {modelsAreLive
-                      ? 'Live list from your key · sorted fastest first. $–$$$ is relative cost, not price.'
-                      : 'Default list — add a valid API key to load your available models.'}
-                  </p>
-                </div>
-
                 {/* System Prompt */}
                 <div className="space-y-2">
                   <label htmlFor="system-prompt" className="text-xs font-semibold opacity-70">System Prompt</label>
@@ -598,6 +530,64 @@ export default function App() {
                         exit={{ height: 0, opacity: 0 }}
                         className="overflow-hidden space-y-4 pt-4"
                       >
+                        {/* Model — optional override of the recommended default */}
+                        <div className="space-y-2">
+                          <label htmlFor="model-select" className="text-[10px] font-bold uppercase tracking-widest opacity-70">Gemini Model</label>
+                          <div className="flex gap-2">
+                            <div className="relative flex-1">
+                              <select
+                                id="model-select"
+                                value={selectedModel}
+                                onChange={(e) => setSelectedModel(e.target.value)}
+                                aria-describedby="model-hint"
+                                className={`${FIELD_CLASS} pl-4 pr-10 py-2 appearance-none cursor-pointer`}
+                              >
+                                {sortedModels.map(m => (
+                                  <option key={m.id} value={m.id}>
+                                    {m.id === DEFAULT_GEMINI_MODEL ? `Recommended: ${describeModel(m)}` : describeModel(m)}
+                                  </option>
+                                ))}
+                              </select>
+                              <ChevronDown size={16} className="absolute right-4 top-1/2 -translate-y-1/2 opacity-40 pointer-events-none" aria-hidden="true" />
+                            </div>
+                            <button
+                              onClick={() => copyToClipboard(selectedModel, 'model')}
+                              className="bg-ink text-white rounded-xl px-4 py-2 hover:bg-ink/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 focus-visible:ring-offset-2 transition-colors flex items-center justify-center min-w-[48px]"
+                              aria-label="Copy model ID"
+                            >
+                              {copied === 'model' ? <Check size={18} className="text-emerald-400" aria-hidden="true" /> : <Copy size={18} aria-hidden="true" />}
+                            </button>
+                          </div>
+                          <p id="model-hint" className="text-[10px] opacity-60 italic">
+                            {`Leave on Recommended unless you need a specific model. Same list as the bot's "Configure bot", as of ${new Date(GEMINI_MODELS_FETCHED_AT).toLocaleDateString()}.`}
+                          </p>
+                        </div>
+
+                        {/* Thinking level — optional override, only for models that accept levels */}
+                        {thinkingLevelsFor(selectedModel).length > 0 && (
+                          <div className="space-y-2">
+                            <label htmlFor="thinking-select" className="text-[10px] font-bold uppercase tracking-widest opacity-70">Thinking Level</label>
+                            <div className="relative">
+                              <select
+                                id="thinking-select"
+                                value={effectiveThinkingLevel ?? ''}
+                                onChange={(e) => setThinkingLevel(e.target.value)}
+                                aria-describedby="thinking-hint"
+                                className={`${FIELD_CLASS} pl-4 pr-10 py-2 appearance-none cursor-pointer`}
+                              >
+                                <option value="">Model default (recommended)</option>
+                                {thinkingLevelsFor(selectedModel).map(level => (
+                                  <option key={level} value={level}>{describeThinkingLevel(level)}</option>
+                                ))}
+                              </select>
+                              <ChevronDown size={16} className="absolute right-4 top-1/2 -translate-y-1/2 opacity-40 pointer-events-none" aria-hidden="true" />
+                            </div>
+                            <p id="thinking-hint" className="text-[10px] opacity-60 italic">
+                              More thinking can improve the post but is slower; the bot gives Gemini 20 seconds.
+                            </p>
+                          </div>
+                        )}
+
                         <div className="space-y-2">
                           <label htmlFor="prepend-text" className="text-[10px] font-bold uppercase tracking-widest opacity-70">Prepend Text</label>
                           <textarea

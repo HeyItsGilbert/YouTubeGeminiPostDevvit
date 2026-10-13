@@ -24,15 +24,17 @@ Issues & Requests: [HeyItsGilbert/YouTubeGeminiPostDevvit](https://github.com/He
 Moderators get three items in the subreddit **Mod Tools** menu:
 
 - **Configure bot** — set the Google API key and which sticky slot (1 or 2)
-  episode posts take.
+  episode posts take. Under **Advanced (optional)** you can override the
+  Gemini model (default: Gemini Flash Latest) and thinking level (default:
+  the model decides); most subreddits should leave these alone.
 - **Check for new videos** — run a check immediately.
 - **Review pending post** — when mod approval is enabled, edit the pending post,
   then publish it, discard it (the next check treats the video as unseen), or
   reject the video (never post it).
 
 On any episode post, the post menu offers **Regenerate discussion**: rewrite the
-discussion comment with fresh Gemini output, optionally using an edited system
-prompt for that one regeneration. If any manual action fails,
+discussion comment with fresh Gemini output, optionally with a different model,
+thinking level, or edited system prompt for that one regeneration. If any manual action fails,
 the triggering mod receives a Reddit PM with the error details. Scheduled
 (cron) runs are self-healing — state is only persisted on success, so the next
 30-minute tick retries automatically.
@@ -57,7 +59,6 @@ All settings are configured per subreddit in the app's installation settings.
 |----------------------------|-----------|--------|--------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
 | `youtubePlaylistId`        | string    | No     | --                 | YouTube playlist ID to monitor                                                                                                               |
 | `excludeTitleKeywords`     | string    | No     | *(empty)*          | Comma-separated keywords. Videos whose titles contain any keyword are permanently skipped (e.g. `trailer, short, bonus`)                     |
-| `geminiModel`              | string    | No     | `gemini-2.0-flash` | Gemini model for post generation                                                                                                             |
 | `systemPrompt`             | paragraph | No     | --                 | System prompt for Gemini. User message includes Title, Published, Link, and Description                                                      |
 | `botFlairEmoji`            | string    | No     | *(empty)*          | Emoji for the bot's author flair on this subreddit, e.g. `🎙️`                                                                               |
 | `botFlairText`             | string    | No     | *(empty)*          | Text for the bot's author flair, e.g. `Podcast Bot`. Combined with emoji if both are set                                                     |

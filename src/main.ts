@@ -2,6 +2,8 @@ import { Devvit, SettingScope } from "@devvit/public-api";
 
 import { fetchPlaylistVideos, fetchYouTubeVideoById } from "./episodeChecker.js";
 import { generateEpisodePost } from "./llmClient.js";
+import { GEMINI_MODELS, DEFAULT_GEMINI_MODEL, describeModel, describeThinkingLevel, resolveThinkingLevel, thinkingLevelsFor } from "./geminiModels.js";
+import type { ThinkingLevel } from "./types.js";
 import { createEpisodePost, updateEpisodePost, applyBotFlair, applyFlair, managePins } from "./postManager.js";
 import { getAllVideoRecords, setVideoRecord, deleteVideoRecord, findVideoByPostId } from "./videoRegistry.js";
 import { assemblePostBody, applyPlaceholders, matchesExclusionFilter, isPrivateVideo } from "./postUtils.js";
@@ -40,15 +42,7 @@ Devvit.addSettings([
     scope: SettingScope.Installation,
   },
 
-  // --- Gemini Configuration ---
-  {
-    type: 'string',
-    name: 'geminiModel',
-    label: 'Gemini Model',
-    helpText: 'Model ID for post generation (default: gemini-2.0-flash, free tier).',
-    defaultValue: 'gemini-2.0-flash',
-    scope: SettingScope.Installation,
-  },
+  // --- Gemini Configuration (model and thinking level live in "Configure bot") ---
   {
     type: 'paragraph',
     name: 'systemPrompt',
@@ -137,6 +131,9 @@ const REDIS_KEY_GOOGLE_API_KEY = 'google_api_key';
 const REDIS_KEY_PENDING_POST = 'pending_post';
 const REDIS_KEY_PENDING_POST_JOB_ID = 'pending_post_job_id';
 const REDIS_KEY_STICKY_SLOT = 'last_episode_sticky_slot';
+const REDIS_KEY_GEMINI_MODEL = 'gemini_model';
+const REDIS_KEY_THINKING_LEVEL = 'gemini_thinking_level';
+const REDIS_KEY_REGENERATE_DRAFT_PREFIX = 'regenerate_draft:';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -200,9 +197,92 @@ function isPlaytestInstall(context: { appVersion: string }): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Configure bot — Google API key (stored in Redis, kept out of the visible
-// settings UI) and pin slot
+// Gemini model + thinking level — advanced, optional overrides chosen in
+// "Configure bot" and stored in Redis. Unset means DEFAULT_GEMINI_MODEL with
+// no reasoning_effort (the model decides how much to think).
 // ---------------------------------------------------------------------------
+
+/** Select value meaning "no override". */
+const DEFAULT_CHOICE = 'default';
+
+async function getGeminiChoice(
+  context: Pick<Devvit.Context, 'redis'>,
+): Promise<{ model: string; isDefaultModel: boolean; thinkingLevel: ThinkingLevel | undefined }> {
+  const [storedModel, storedLevel] = await Promise.all([
+    context.redis.get(REDIS_KEY_GEMINI_MODEL),
+    context.redis.get(REDIS_KEY_THINKING_LEVEL),
+  ]);
+  const model = storedModel || DEFAULT_GEMINI_MODEL;
+  return { model, isDefaultModel: !storedModel, thinkingLevel: resolveThinkingLevel(model, storedLevel) };
+}
+
+/** `current` null = the recommended default. A model a newer build dropped stays listed so a save never silently switches it. */
+function modelSelectField(current: string | null) {
+  const defaultName = GEMINI_MODELS.find(m => m.id === DEFAULT_GEMINI_MODEL)?.name ?? DEFAULT_GEMINI_MODEL;
+  const options = [
+    { label: `Recommended: ${defaultName}`, value: DEFAULT_CHOICE },
+    ...GEMINI_MODELS.map(m => ({ label: describeModel(m), value: m.id })),
+  ];
+  if (current && !GEMINI_MODELS.some(m => m.id === current)) {
+    options.push({ label: `${current} (no longer listed)`, value: current });
+  }
+  return {
+    type: 'select' as const,
+    name: 'geminiModel',
+    label: 'Gemini model',
+    helpText: 'Leave on Recommended unless you need a specific model. Recommended follows Google\'s newest Flash model.',
+    options,
+    defaultValue: [current ?? DEFAULT_CHOICE],
+    required: true,
+  };
+}
+
+function customizeThinkingField(label: string, defaultValue: boolean) {
+  return {
+    type: 'boolean' as const,
+    name: 'customizeThinking',
+    label,
+    helpText: 'Off: the model decides how much to think (recommended). On: pick a level on the next screen.',
+    defaultValue,
+  };
+}
+
+function thinkingLevelSelectField(model: string, current: ThinkingLevel | undefined) {
+  return {
+    type: 'select' as const,
+    name: 'thinkingLevel',
+    label: 'Thinking level',
+    helpText: 'More thinking can improve the discussion but is slower; Gemini has 20 seconds to answer.',
+    options: [
+      { label: 'Model default (recommended)', value: DEFAULT_CHOICE },
+      ...thinkingLevelsFor(model).map(level => ({ label: describeThinkingLevel(level), value: level })),
+    ],
+    defaultValue: [current ?? DEFAULT_CHOICE],
+    required: true,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Configure bot — Google API key (stored in Redis, kept out of the visible
+// settings UI), pin slot, and under Advanced the Gemini model; then, if asked
+// for, a second form with the levels that model accepts
+// ---------------------------------------------------------------------------
+
+const configureThinkingLevelForm = Devvit.createForm(
+  (data: { [key: string]: unknown }) => ({
+    title: 'Configure bot: thinking level',
+    description: `Levels ${String(data.model)} accepts. Saved for every check; "Regenerate discussion" can override it per run.`,
+    fields: [thinkingLevelSelectField(String(data.model), data.thinkingLevel as ThinkingLevel | undefined)],
+    acceptLabel: 'Save',
+    cancelLabel: 'Keep current',
+  }),
+  async ({ values }, context) => {
+    const { model } = await getGeminiChoice(context);
+    const level = resolveThinkingLevel(model, (values.thinkingLevel as string[] | undefined)?.[0]);
+    await (level ? context.redis.set(REDIS_KEY_THINKING_LEVEL, level) : context.redis.del(REDIS_KEY_THINKING_LEVEL));
+    context.ui.showToast(level ? `${model} will use ${level} thinking.` : `${model} will decide how much to think.`);
+  }
+);
 
 const configureBotForm = Devvit.createForm(
   (data: { [key: string]: unknown }) => ({
@@ -228,6 +308,14 @@ const configureBotForm = Devvit.createForm(
         defaultValue: [data.currentSlot === 2 ? '2' : '1'],
         required: true,
       },
+      {
+        type: 'group',
+        label: 'Advanced (optional)',
+        fields: [
+          modelSelectField(typeof data.storedModel === 'string' ? data.storedModel : null),
+          customizeThinkingField('Choose a thinking level', data.hasThinkingLevel === true),
+        ],
+      },
     ],
     acceptLabel: 'Save',
     cancelLabel: 'Cancel',
@@ -235,28 +323,45 @@ const configureBotForm = Devvit.createForm(
   async ({ values }, context) => {
     const key = (values.apiKey as string | undefined)?.trim();
     const slot = (values.pinSlot as string[] | undefined)?.[0] === '2' ? '2' : '1';
+    const previous = await getGeminiChoice(context);
+    const picked = (values.geminiModel as string[] | undefined)?.[0];
+    const storedModel = picked && picked !== DEFAULT_CHOICE ? picked : null;
+    const model = storedModel ?? DEFAULT_GEMINI_MODEL;
+    const customizeThinking = values.customizeThinking === true && thinkingLevelsFor(model).length > 0;
     await Promise.all([
       key ? context.redis.set(REDIS_KEY_GOOGLE_API_KEY, key) : Promise.resolve(),
       context.redis.set(REDIS_KEY_STICKY_SLOT, slot),
+      storedModel ? context.redis.set(REDIS_KEY_GEMINI_MODEL, storedModel) : context.redis.del(REDIS_KEY_GEMINI_MODEL),
+      // A level picked for another model may not apply.
+      customizeThinking && model === previous.model ? Promise.resolve() : context.redis.del(REDIS_KEY_THINKING_LEVEL),
     ]);
-    context.ui.showToast(key ? `API key saved; pin slot ${slot}.` : `Pin slot ${slot} saved.`);
+    context.ui.showToast(key ? `API key saved; ${model}; pin slot ${slot}.` : `Saved ${model}; pin slot ${slot}.`);
+    if (customizeThinking) {
+      context.ui.showForm(configureThinkingLevelForm, {
+        model,
+        thinkingLevel: model === previous.model ? previous.thinkingLevel ?? null : null,
+      });
+    }
   }
 );
 
 Devvit.addMenuItem({
   label: 'Configure bot',
-  description: 'Set the Google API key (YouTube + Gemini) and which sticky slot episode posts use.',
+  description: 'Set the Google API key (YouTube + Gemini) and which sticky slot episode posts use; optionally override the Gemini model and thinking level.',
   location: 'subreddit',
   forUserType: 'moderator',
   onPress: async (_event, context) => {
     await ensureCheckerScheduled(context, 'heal');
-    const [apiKey, current] = await Promise.all([
+    const [apiKey, current, gemini] = await Promise.all([
       context.redis.get(REDIS_KEY_GOOGLE_API_KEY),
       context.redis.get(REDIS_KEY_STICKY_SLOT),
+      getGeminiChoice(context),
     ]);
     context.ui.showForm(configureBotForm, {
       hasApiKey: Boolean(apiKey),
       currentSlot: current === '2' ? 2 : 1,
+      storedModel: gemini.isDefaultModel ? null : gemini.model,
+      hasThinkingLevel: gemini.thinkingLevel !== undefined,
     });
   },
 });
@@ -416,7 +521,7 @@ Devvit.addSchedulerJob({
         googleApiKey,
         playlistId,
         excludeKeywords,
-        geminiModel,
+        gemini,
         systemPrompt,
         botFlairEmoji,
         botFlairText,
@@ -430,7 +535,7 @@ Devvit.addSchedulerJob({
         redis.get(REDIS_KEY_GOOGLE_API_KEY),
         settings.get<string>('youtubePlaylistId'),
         settings.get<string>('excludeTitleKeywords').then(v => v || ''),
-        settings.get<string>('geminiModel').then(v => v || 'gemini-2.0-flash'),
+        getGeminiChoice(context),
         settings.get<string>('systemPrompt'),
         settings.get<string>('botFlairEmoji').then(v => v || ''),
         settings.get<string>('botFlairText').then(v => v || ''),
@@ -567,7 +672,7 @@ Devvit.addSchedulerJob({
 
       // 5. Generate post content via Gemini
       log('Calling Gemini API...');
-      const { title, body: rawBody } = await generateEpisodePost(googleApiKey, episode, systemPrompt, geminiModel);
+      const { title, body: rawBody } = await generateEpisodePost(googleApiKey, episode, systemPrompt, gemini.model, gemini.thinkingLevel);
       log(`Generated title: "${title}"`);
 
       const body = assemblePostBody(
@@ -861,6 +966,9 @@ type RegenerateJobData = {
   videoId: string;
   commentId: string;
   systemPrompt: string;
+  model: string;
+  /** null = the model's default */
+  thinkingLevel: ThinkingLevel | null;
   triggeredBy: string | null;
 };
 
@@ -868,7 +976,7 @@ Devvit.addSchedulerJob<RegenerateJobData>({
   name: 'regenerate_discussion',
   onRun: async (event, context) => {
     const { redis, reddit, settings } = context;
-    const { videoId, commentId, systemPrompt, triggeredBy } = event.data!;
+    const { videoId, commentId, systemPrompt, model, thinkingLevel, triggeredBy } = event.data!;
     let notificationMods: string[] = [];
 
     try {
@@ -876,7 +984,6 @@ Devvit.addSchedulerJob<RegenerateJobData>({
       notificationMods = notificationModsSetting.split(',').map(u => u.trim()).filter(Boolean);
 
       const googleApiKey = await redis.get(REDIS_KEY_GOOGLE_API_KEY);
-      const geminiModel = (await settings.get<string>('geminiModel')) || 'gemini-2.0-flash';
       const botFlairEmoji = (await settings.get<string>('botFlairEmoji')) || '';
       const botFlairText = (await settings.get<string>('botFlairText')) || '';
       const prependText = (await settings.get<string>('prependText')) || '';
@@ -894,8 +1001,8 @@ Devvit.addSchedulerJob<RegenerateJobData>({
         return;
       }
 
-      console.log(`[bot] Regenerating discussion for "${episode.title}"...`);
-      const { body: rawBody } = await generateEpisodePost(googleApiKey, episode, systemPrompt, geminiModel);
+      console.log(`[bot] Regenerating discussion for "${episode.title}" with ${model} (thinking: ${thinkingLevel ?? 'model default'})...`);
+      const { body: rawBody } = await generateEpisodePost(googleApiKey, episode, systemPrompt, model, thinkingLevel ?? undefined);
 
       const body = assemblePostBody(
         applyPlaceholders(prependText, episode),
@@ -919,10 +1026,46 @@ Devvit.addSchedulerJob<RegenerateJobData>({
   },
 });
 
+async function triggerRegeneration(context: Devvit.Context, data: RegenerateJobData): Promise<void> {
+  try {
+    await context.scheduler.runJob({ name: 'regenerate_discussion', runAt: new Date(), data });
+    context.ui.showToast('Regeneration triggered! Check logs for results.');
+  } catch (err) {
+    console.error(`[bot] Regenerate trigger failed: ${err}`);
+    context.ui.showToast('Failed to trigger regeneration. See logs.');
+  }
+}
+
+// Step 1 hands its answers to step 2 through Redis: a form's submit handler
+// only receives its own fields. Keyed per mod; expires if step 2 is abandoned.
+const REGENERATE_DRAFT_TTL_MS = 60 * 60 * 1000;
+
+const regenerateThinkingLevelForm = Devvit.createForm(
+  (data: { [key: string]: unknown }) => ({
+    title: 'Regenerate discussion: thinking level',
+    description: `Levels ${String(data.model)} accepts. Applies to this regeneration only.`,
+    fields: [thinkingLevelSelectField(String(data.model), data.thinkingLevel as ThinkingLevel | undefined)],
+    acceptLabel: 'Regenerate',
+    cancelLabel: 'Cancel',
+  }),
+  async ({ values }, context) => {
+    const draftKey = REDIS_KEY_REGENERATE_DRAFT_PREFIX + context.userId;
+    const draftJson = await context.redis.get(draftKey);
+    if (!draftJson) {
+      context.ui.showToast('This regeneration expired. Start again from the post menu.');
+      return;
+    }
+    await context.redis.del(draftKey);
+    const draft = JSON.parse(draftJson) as RegenerateJobData;
+    const level = resolveThinkingLevel(draft.model, (values.thinkingLevel as string[] | undefined)?.[0]);
+    await triggerRegeneration(context, { ...draft, thinkingLevel: level ?? null });
+  }
+);
+
 const regenerateDiscussionForm = Devvit.createForm(
   (data: { [key: string]: unknown }) => ({
     title: 'Regenerate discussion',
-    description: `Rewrites the discussion comment for "${String(data.videoTitle ?? '')}". Edits to the prompt apply to this regeneration only; the System Prompt setting is unchanged.`,
+    description: `Rewrites the discussion comment for "${String(data.videoTitle ?? '')}". Choices here apply to this regeneration only; the bot's configuration is unchanged.`,
     fields: [
       {
         type: 'paragraph',
@@ -930,6 +1073,14 @@ const regenerateDiscussionForm = Devvit.createForm(
         label: 'System Prompt',
         defaultValue: String(data.systemPrompt ?? ''),
         required: true,
+      },
+      {
+        type: 'group',
+        label: 'Advanced (optional)',
+        fields: [
+          modelSelectField(typeof data.storedModel === 'string' ? data.storedModel : null),
+          customizeThinkingField('Choose a thinking level for this run', false),
+        ],
       },
     ],
     acceptLabel: 'Regenerate',
@@ -942,23 +1093,30 @@ const regenerateDiscussionForm = Devvit.createForm(
       context.ui.showToast('Could not find the episode post to regenerate.');
       return;
     }
-    try {
-      const currentUser = await context.reddit.getCurrentUser();
-      await context.scheduler.runJob({
-        name: 'regenerate_discussion',
-        runAt: new Date(),
-        data: {
-          videoId: found.videoId,
-          commentId: found.record.commentId,
-          systemPrompt: (values.systemPrompt as string).trim(),
-          triggeredBy: currentUser?.username ?? null,
-        },
+    const [configured, currentUser] = await Promise.all([
+      getGeminiChoice(context),
+      context.reddit.getCurrentUser(),
+    ]);
+    const picked = (values.geminiModel as string[] | undefined)?.[0];
+    const model = picked && picked !== DEFAULT_CHOICE ? picked : DEFAULT_GEMINI_MODEL;
+    // Without a per-run choice, keep the configured level if it applies to this model.
+    const thinkingLevel = resolveThinkingLevel(model, configured.thinkingLevel) ?? null;
+    const draft: RegenerateJobData = {
+      videoId: found.videoId,
+      commentId: found.record.commentId,
+      systemPrompt: (values.systemPrompt as string).trim(),
+      model,
+      thinkingLevel,
+      triggeredBy: currentUser?.username ?? null,
+    };
+    if (values.customizeThinking === true && thinkingLevelsFor(model).length > 0 && context.userId) {
+      await context.redis.set(REDIS_KEY_REGENERATE_DRAFT_PREFIX + context.userId, JSON.stringify(draft), {
+        expiration: new Date(Date.now() + REGENERATE_DRAFT_TTL_MS),
       });
-      context.ui.showToast('Regeneration triggered! Check logs for results.');
-    } catch (err) {
-      console.error(`[bot] Regenerate trigger failed: ${err}`);
-      context.ui.showToast('Failed to trigger regeneration. See logs.');
+      context.ui.showForm(regenerateThinkingLevelForm, { model, thinkingLevel });
+      return;
     }
+    await triggerRegeneration(context, draft);
   }
 );
 
@@ -978,10 +1136,14 @@ Devvit.addMenuItem({
       context.ui.showToast('This episode post predates discussion comments and cannot be regenerated.');
       return;
     }
-    const systemPrompt = (await context.settings.get<string>('systemPrompt')) || '';
+    const [systemPrompt, gemini] = await Promise.all([
+      context.settings.get<string>('systemPrompt'),
+      getGeminiChoice(context),
+    ]);
     context.ui.showForm(regenerateDiscussionForm, {
       videoTitle: found.record.title,
-      systemPrompt,
+      systemPrompt: systemPrompt || '',
+      storedModel: gemini.isDefaultModel ? null : gemini.model,
     });
   },
 });

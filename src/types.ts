@@ -37,3 +37,22 @@ export interface VideoRecord {
   /** ISO 8601 timestamp when the record was written */
   processedAt: string;
 }
+
+/** `reasoning_effort` values on Gemini's OpenAI-compatible endpoint, least to most thinking. */
+export type ThinkingLevel = 'none' | 'minimal' | 'low' | 'medium' | 'high';
+
+export interface GeminiModel {
+  /** Model ID passed to the API, e.g. `gemini-3-flash-preview` */
+  id: string;
+  /** Display name from the models API */
+  name: string;
+  /** Levels the model accepted when probed, least to most; empty = no level control */
+  thinkingLevels: ThinkingLevel[];
+}
+
+/** Build-time snapshot written by `npm run models:sync` */
+export interface GeminiModelCatalog {
+  /** ISO 8601 time the catalog was fetched */
+  fetchedAt: string;
+  models: GeminiModel[];
+}

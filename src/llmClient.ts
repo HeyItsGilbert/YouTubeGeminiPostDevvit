@@ -1,4 +1,4 @@
-import { type EpisodeData, type GeneratedPost } from './types.js';
+import { type EpisodeData, type GeneratedPost, type ThinkingLevel } from './types.js';
 import { buildUserMessage, parseGeneratedResponse, applyPlaceholders } from './postUtils.js';
 
 // Uses the OpenAI-compatible endpoint to avoid colon-in-path URLs like
@@ -11,21 +11,22 @@ const GEMINI_OPENAI_URL = 'https://generativelanguage.googleapis.com/v1beta/open
 // that run before Gemini in the same invocation.
 const GEMINI_DEADLINE_MS = 20_000;
 
-// Thinking time is what pushes long system prompts past the deadline.
-// 'minimal' is the lowest effort every Gemini thinking family accepts on the
-// OpenAI-compatible endpoint (Gemini 3 cannot disable thinking entirely).
-const GEMINI_REASONING_EFFORT = 'minimal';
-
 /**
  * Call the Gemini API to generate a post from video metadata.
  * Uses the OpenAI-compatible endpoint so the URL has no colon-prefixed
  * method segment, which is required for Devvit's HTTP proxy.
+ *
+ * `thinkingLevel` is sent as `reasoning_effort`; `undefined` leaves the
+ * model's default. Levels come from the build-time catalog, but a model can
+ * stop accepting one after the build, so a 400 rejecting the level is retried
+ * once at the model's default rather than failing the run.
  */
 export async function generateEpisodePost(
   apiKey: string,
   episode: EpisodeData,
   systemPrompt: string,
-  geminiModel: string
+  geminiModel: string,
+  thinkingLevel: ThinkingLevel | undefined,
 ): Promise<GeneratedPost> {
   const resolvedSystemPrompt = applyPlaceholders(systemPrompt, episode);
   const userMessage = buildUserMessage(episode);
@@ -42,27 +43,39 @@ export async function generateEpisodePost(
     cancelDeadline = () => clearTimeout(timer);
   });
   const started = Date.now();
-  let response: Response;
+  let response: Response | undefined;
   try {
-    response = await Promise.race([
-      fetch(GEMINI_OPENAI_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: geminiModel,
-          messages: [
-            { role: 'system', content: resolvedSystemPrompt },
-            { role: 'user', content: userMessage },
-          ],
-          max_tokens: 4096,
-          reasoning_effort: GEMINI_REASONING_EFFORT,
+    for (const effort of thinkingLevel ? [thinkingLevel, undefined] : [undefined]) {
+      response = await Promise.race([
+        fetch(GEMINI_OPENAI_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: geminiModel,
+            messages: [
+              { role: 'system', content: resolvedSystemPrompt },
+              { role: 'user', content: userMessage },
+            ],
+            max_tokens: 4096,
+            reasoning_effort: effort,
+          }),
         }),
-      }),
-      timedOut,
-    ]);
+        timedOut,
+      ]);
+      console.log(`[llmClient] Response status: ${response.status} after ${Date.now() - started} ms (reasoning_effort: ${effort ?? 'model default'})`);
+      if (response.ok) break;
+
+      const errText = await response.text().catch(() => '(unreadable)');
+      if (effort !== undefined && response.status === 400 && /thinking|reasoning/i.test(errText)) {
+        console.warn(`[llmClient] Model ${geminiModel} rejected reasoning_effort '${effort}' (${errText.slice(0, 200)}); retrying at the model default.`);
+        continue;
+      }
+      console.error(`[llmClient] Error response: ${errText.slice(0, 500)}`);
+      throw new Error(`Gemini API error ${response.status}: ${errText}`);
+    }
   } catch (err) {
     console.error(`[llmClient] Request failed after ${Date.now() - started} ms: ${err}`);
     throw err;
@@ -70,12 +83,9 @@ export async function generateEpisodePost(
     cancelDeadline();
   }
 
-  console.log(`[llmClient] Response status: ${response.status} after ${Date.now() - started} ms`);
-
-  if (!response.ok) {
-    const errText = await response.text().catch(() => '(unreadable)');
-    console.error(`[llmClient] Error response: ${errText.slice(0, 500)}`);
-    throw new Error(`Gemini API error ${response.status}: ${errText}`);
+  if (!response?.ok) {
+    // Unreachable: the last effort is undefined, whose failure always throws above.
+    throw new Error(`Gemini API error ${response?.status ?? 'unknown'}`);
   }
 
   const data = (await response.json()) as {

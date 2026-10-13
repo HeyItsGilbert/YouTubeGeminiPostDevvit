@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Optional **Advanced** overrides in **Configure bot**: pick a specific Gemini
+  model, and turn on **Choose a thinking level** to pick from the levels that
+  model accepts on the next screen. The model list and each model's levels
+  are refreshed from the Gemini API on every deploy (`npm run models:sync`).
+- **Regenerate discussion** has the same Advanced overrides for a single
+  regeneration.
+- The preview site offers the same model list and thinking levels under
+  Advanced Settings.
+
+### Changed
+
+- The bot now uses `gemini-flash-latest` (Google's newest Flash model) by
+  default and lets the model decide how much to think, unless a mod sets an
+  override.
+- The `geminiModel` installation setting is removed. Installs that had set it
+  switch to the new default; pick a model under **Configure bot → Advanced**
+  to keep a specific one.
+- Upgraded Devvit to 0.14.8.
+
+### Fixed
+
+- Video checks failed with "Thinking level MINIMAL is not supported for this
+  model" on models that don't accept minimal thinking (e.g. Gemini 3 Pro).
+  The bot no longer sends a thinking level unless a mod picks one the model
+  accepts, and retries at the model's default if a model stops accepting it.
+
 ## [0.2.0] - 2026-10-11
 
 ### Added

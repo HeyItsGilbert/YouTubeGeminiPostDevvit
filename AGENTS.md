@@ -24,6 +24,12 @@ src/
                     videos. Contains the exclusion-keyword filter.
   llmClient.ts      Gemini API client (via OpenAI-compatible endpoint). Delegates
                     message building and response parsing to postUtils.ts.
+  geminiModels.ts   Platform-agnostic model catalog helpers shared with the preview
+                    web app: GEMINI_MODELS (fastest first), DEFAULT_GEMINI_MODEL,
+                    thinkingLevelsFor, resolveThinkingLevel, describe* labels.
+  geminiModels.generated.ts
+                    Committed model catalog (models + accepted thinking levels),
+                    written by scripts/sync-gemini-models.mjs. Never hand-edit.
   postManager.ts    Reddit operations: link post submission with a distinguished, stickied
                     discussion comment, flair application, bot author flair, comment editing,
                     and pin rotation.
@@ -35,7 +41,12 @@ src/
                     Stores status (posted/pending/excluded/rejected/skipped/private) and
                     postId/commentId per video ID. Posted records are terminal: never
                     overwritten (except by a forced repost) or deleted.
-  types.ts          Shared interfaces: EpisodeData, GeneratedPost, VideoRecord.
+  types.ts          Shared interfaces: EpisodeData, GeneratedPost, VideoRecord,
+                    ThinkingLevel, GeminiModel, GeminiModelCatalog.
+
+scripts/sync-gemini-models.mjs
+                    `npm run models:sync` (and `predeploy`): lists Gemini models and
+                    probes each thinking model per reasoning_effort level.
 
 devvit.json         App manifest. Declares entry point and allowed HTTP domains.
 package.json        Build scripts and dependencies.
@@ -63,7 +74,8 @@ any mod menu press                     → ensureCheckerScheduled('heal', ≤ on
 
 check_new_episodes job (src/main.ts)
   │
-  ├─ 1. Read all settings (concurrently) + Google API key from Redis
+  ├─ 1. Read all settings (concurrently) + Google API key and Gemini choice
+  │     (getGeminiChoice: model + resolved thinking level) from Redis
   ├─ 2. Validate: googleApiKey, youtubePlaylistId, systemPrompt required
   │
   ├─ 3. In parallel: fetchPlaylistVideos and the whole video registry
@@ -86,7 +98,7 @@ check_new_episodes job (src/main.ts)
   │       (no Gemini call while a post awaits approval). Otherwise, on the approval
   │       path, the queued video is recorded as 'pending' after step 6.
   │
-  ├─ 5. generateEpisodePost(apiKey, episode, systemPrompt, model)  llmClient.ts
+  ├─ 5. generateEpisodePost(apiKey, episode, systemPrompt, model, thinkingLevel)  llmClient.ts
   │       POST OpenAI-compat endpoint → parse first line = title, rest = body
   │
   ├─ 6. Assemble final discussion body (becomes the comment, not the post):
@@ -109,7 +121,15 @@ check_new_episodes job (src/main.ts)
 
 ### Regeneration flow (post menu → "Regenerate discussion")
 
-Available on any post; the menu handler looks the post up in the video registry (`findVideoByPostId`) and toasts if it isn't an Episode Post or has no tracked `commentId` (posts created before the comment-based flow). The form pre-fills the `systemPrompt` setting; any edit is passed to the `regenerate_discussion` job as job data and used for that run only — the setting is never changed (Devvit apps cannot write installation settings). The job re-runs Gemini and calls `updateEpisodePost` to edit the discussion comment. Does **not** re-submit, re-flair, or re-pin. Uses `fetchYouTubeVideoById` rather than the playlist. The form's submit handler reads the target from `context.postId`.
+Available on any post; the menu handler looks the post up in the video registry (`findVideoByPostId`) and toasts if it isn't an Episode Post or has no tracked `commentId` (posts created before the comment-based flow). Step 1 pre-fills the `systemPrompt` setting and, under an "Advanced (optional)" group, the configured model plus a "Choose a thinking level for this run" toggle (off). Without the toggle, the run uses the configured level if the chosen model accepts it, else none. With the toggle on, step 1 stores its answers in Redis (`regenerate_draft:<userId>`, 1 h expiry — a form's submit handler only receives its own fields) and opens step 2, which offers "Model default" plus that model's levels. Model, level, and prompt go to the `regenerate_discussion` job as job data and apply to that run only — the bot's configuration is never changed. The job re-runs Gemini and calls `updateEpisodePost` to edit the discussion comment. Does **not** re-submit, re-flair, or re-pin. Uses `fetchYouTubeVideoById` rather than the playlist. Step 1's submit handler reads the target from `context.postId`.
+
+### Model catalog and thinking levels
+
+Model and thinking level are **advanced, optional overrides**; mods aren't expected to know which model to pick. By default the bot uses `DEFAULT_GEMINI_MODEL` (`gemini-flash-latest`, Google's rolling alias for its newest Flash model, so it doesn't get retired like versioned IDs) and sends no `reasoning_effort`, letting the model decide how much to think.
+
+Devvit settings can't show or hide a field based on another field, and their options are fixed at upload, so the overrides live in Redis and are chosen in forms. The model options come from `src/geminiModels.generated.ts`, refreshed by `npm run models:sync` (run by `predeploy`, needs `GEMINI_API_KEY` in the root `.env`). No Google API reports which levels a model accepts (`models.list` has only `thinking: boolean`; see `docs/research/gemini-model-thinking-levels.md`), so the script first sends each model one plain request (400/404 = dropped: retired, or Interactions-API-only), then probes each thinking model once per level (`none`, `minimal`, `low`, `medium`, `high`) on the same OpenAI-compatible endpoint the bot uses: 200 = accepted, 400 = rejected, anything else = inconclusive (keeps the previous catalog's levels).
+
+"Configure bot" has an "Advanced (optional)" group: a model select whose first option, "Recommended", stores nothing (deletes `gemini_model`), and a "Choose a thinking level" toggle. With the toggle on and a model that accepts levels, saving opens a second form with "Model default" plus that model's levels. Toggle off, or a model change, deletes `gemini_thinking_level`. `resolveThinkingLevel(model, chosen)` returns `chosen` only if the model accepts it, else `undefined` (no `reasoning_effort`).
 
 ### Testing Tools
 
@@ -175,7 +195,7 @@ Platform-agnostic pure utilities. **No Devvit APIs, no browser-only globals.** S
 
 ### `src/llmClient.ts`
 
-**Exported function:** `generateEpisodePost(apiKey, episode, systemPrompt, geminiModel) → Promise<GeneratedPost>`
+**Exported function:** `generateEpisodePost(apiKey, episode, systemPrompt, geminiModel, thinkingLevel) → Promise<GeneratedPost>`
 
 **API endpoint used:**
 
@@ -195,7 +215,7 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
     { "role": "user",   "content": "Title: ...\nPublished: ...\nLink: ...\nDescription: ..." }
   ],
   "max_tokens": 4096,
-  "reasoning_effort": "minimal"
+  "reasoning_effort": "<thinkingLevel, omitted when undefined>"
 }
 ```
 
@@ -203,7 +223,7 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 
 **`finish_reason` guard:** If `finish_reason === 'length'`, a warning is logged. The response is still used; no retry is attempted.
 
-**Deadline and thinking effort:** Devvit caps outgoing HTTP at 30 s and can end the invocation with no log line at all, which is what happens when a thinking model spends too long on a long system prompt. `generateEpisodePost` therefore races the request against a 20 s deadline (`GEMINI_DEADLINE_MS`), logging and throwing on timeout so the job's failure handler PMs mods, and sends `reasoning_effort: "minimal"` (the lowest value every Gemini thinking family accepts; Gemini 3 cannot disable thinking).
+**Deadline and thinking effort:** Devvit caps outgoing HTTP at 30 s and can end the invocation with no log line at all, which is what happens when a thinking model spends too long on a long system prompt. `generateEpisodePost` therefore races the request against a 20 s deadline (`GEMINI_DEADLINE_MS`), logging and throwing on timeout so the job's failure handler PMs mods. `thinkingLevel` (see "Model catalog and thinking levels") is sent as `reasoning_effort`. A model can stop accepting a level after the catalog was built, so a 400 mentioning thinking/reasoning is retried once with the field omitted (model default); any other error throws. Both attempts share the one deadline.
 
 ---
 
@@ -230,10 +250,11 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 - Registers `Devvit.configure` with `redditAPI`, `redis`, and the two HTTP domains
 - Declares all installation-scoped settings (see Settings section below)
 - Manages the Google API key: stored in Redis under `google_api_key` via the "Configure bot" form (not a Devvit setting, because Devvit settings are readable by mods via the settings UI)
+- Manages the Gemini model and thinking level in Redis (`gemini_model`, `gemini_thinking_level`) via "Configure bot"; `getGeminiChoice` reads them for every job
 - Registers the `check_new_episodes` scheduler job (the core pipeline)
 - Registers the `regenerate_discussion` scheduler job
 - Registers the `AppInstall`/`AppUpgrade` trigger (`ensureCheckerScheduled('reset')`: cancel every existing checker cron, schedule a fresh one) and a `PostSubmit`/`CommentSubmit` trigger (`ensureCheckerScheduled('heal')`); every mod menu press also heals. See "Scheduler jobs" for why.
-- Registers three subreddit mod menu items — "Configure bot" (API key + pin slot), "Check for new videos" (on a Playtest Install, opens a form with Testing Tools), and "Review pending post" (one form: edit, then Publish / Discard / Reject; Discard deletes the pending post and the video's `pending` record, Reject records the video as `rejected`) — and one post mod menu item, "Regenerate discussion"
+- Registers three subreddit mod menu items — "Configure bot" (API key, pin slot, and an Advanced group with model + thinking-level toggle; then a thinking-level form if toggled), "Check for new videos" (on a Playtest Install, opens a form with Testing Tools), and "Review pending post" (one form: edit, then Publish / Discard / Reject; Discard deletes the pending post and the video's `pending` record, Reject records the video as `rejected`) — and one post mod menu item, "Regenerate discussion" (prompt plus Advanced model/thinking overrides for that run)
 - Exports `default Devvit` (required by Devvit platform)
 
 ---
@@ -246,7 +267,6 @@ All settings use `SettingScope.Installation`. Each subreddit configures its own 
 |---|---|---|---|---|
 | `youtubePlaylistId` | string | Yes | — | Playlist ID (`PLxxx`) or channel ID (`UCxxx`) to monitor. Channel IDs are auto-converted to the corresponding Uploads playlist (`UUxxx`). |
 | `excludeTitleKeywords` | string | No | `''` | Comma-separated keywords; videos whose titles match any are permanently skipped |
-| `geminiModel` | string | No | `gemini-2.0-flash` | Any model ID supported by the OpenAI-compat endpoint |
 | `systemPrompt` | paragraph | Yes | — | Full system prompt for Gemini. First line of model output = post title |
 | `botFlairEmoji` | string | No | `''` | Emoji portion of the bot's author flair |
 | `botFlairText` | string | No | `''` | Text portion of the bot's author flair |
@@ -268,6 +288,9 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | `google_api_key` | string | "Configure bot" form | `check_new_episodes`, `regenerate_discussion` | Google API key for both YouTube and Gemini |
 | `video_registry` | hash | `check_new_episodes` (step 4, 11), `post_pending_episode`, "Review pending post" form (Discard / Reject) | `check_new_episodes` (step 4), "Regenerate discussion" (`findVideoByPostId`) | Hash of videoId → `VideoRecord` JSON. Tracks every seen video with status `posted`, `pending`, `excluded`, `rejected`, `skipped`, or `private`. `posted` is terminal: `setVideoRecord` ignores non-`posted` writes over it and `deleteVideoRecord` refuses to remove it. |
 | `last_episode_sticky_slot` | string (`'1'`–`'2'`) | `managePins`, "Configure bot" form | `managePins`, "Configure bot" form | Sticky slot the bot uses for episode posts. Written by `managePins` after each successful pin, and directly by the "Configure bot" form. Defaults to `1` if absent. |
+| `gemini_model` | string | "Configure bot" form (deleted when "Recommended" is chosen) | `getGeminiChoice` (all Gemini jobs, both forms) | Advanced model override. Absent = `DEFAULT_GEMINI_MODEL`. |
+| `gemini_thinking_level` | string (`ThinkingLevel`) | "Configure bot" thinking-level form; deleted when the toggle is off or the model changes | `getGeminiChoice` | Advanced thinking override. Absent, or not accepted by the model = no `reasoning_effort`. |
+| `regenerate_draft:<userId>` | string (JSON `RegenerateJobData`), 1 h expiry | "Regenerate discussion" step 1 | "Regenerate discussion" step 2 (then deleted) | Carries step 1's answers to the thinking-level step. |
 | `episode_checker_job_id` | string | `ensureCheckerScheduled` | — | ID of the current checker cron job, for debugging. The scheduler's `listJobs()` is the source of truth. |
 | `episode_checker_verified_at` | string (epoch ms) | `ensureCheckerScheduled` | `ensureCheckerScheduled` | When the checker job was last verified; throttles 'heal' to once per 30 minutes. |
 | `check_triggered_by` | string | "Check for new videos" menu item / playtest form | `check_new_episodes` error handler, `post_pending_episode` error handler | Username of the mod who manually triggered; used to send a PM on failure |
@@ -286,7 +309,7 @@ Keys no longer written (may linger on older installs, safe to delete): `last_epi
 |---|---|---|
 | `check_new_episodes` | `*/30 * * * *` (cron) | Kept alive by `ensureCheckerScheduled` (see below). Also triggered immediately by "Check for new videos" via `runAt: new Date()` with job data `{ forceRepost }` (`true` only from the playtest form). |
 | `post_pending_episode` | No fixed schedule | Triggered immediately by the "Review pending post" form's Publish action. Also scheduled at `now + autoApproveWindowMinutes` by `check_new_episodes` when `requireModApproval` is true and a window is configured. |
-| `regenerate_discussion` | No fixed schedule | Only triggered by the "Regenerate discussion" post menu form via `runAt: new Date()`, with job data `{ videoId, commentId, systemPrompt, triggeredBy }`. |
+| `regenerate_discussion` | No fixed schedule | Only triggered by the "Regenerate discussion" post menu forms via `runAt: new Date()`, with job data `{ videoId, commentId, systemPrompt, model, thinkingLevel, triggeredBy }`. |
 
 Blocks apps cannot declare a cron in `devvit.json` (`scheduler.tasks` requires a `server` entry point), so the checker cron is created at runtime by `ensureCheckerScheduled` in `src/checkerSchedule.ts`. On `AppInstall`/`AppUpgrade` it runs in `'reset'` mode: cancel every `check_new_episodes` cron and schedule a fresh one, so a job from an older version is replaced. Those events alone proved unreliable — a playtest install was found with no job, no stored job ID, and no trigger log across six version changes — so `'heal'` mode also runs on every mod menu press and on `PostSubmit`/`CommentSubmit`. Heal is throttled to once per 30 minutes via `episode_checker_verified_at`, schedules the job only if `listJobs()` has none, and cancels duplicates left by concurrent heals. It never throws.
 
@@ -333,7 +356,7 @@ Errors use `console.error`; informational output uses `console.log`; warnings us
 
 ### Change the Gemini model or request parameters
 
-Edit `generateEpisodePost` in `src/llmClient.ts`. The `model`, `max_tokens`, and `reasoning_effort` fields are in the JSON body. The `model` value comes from the `geminiModel` installation setting so mods can change it without a code deploy. Keep `GEMINI_DEADLINE_MS` comfortably under Devvit's 30 s HTTP limit.
+Edit `generateEpisodePost` in `src/llmClient.ts`. The `model`, `max_tokens`, and `reasoning_effort` fields are in the JSON body. Model and thinking level come from Redis via `getGeminiChoice` in `src/main.ts`, so mods change them in "Configure bot" without a code deploy. To refresh the models on offer, run `npm run models:sync` and commit `src/geminiModels.generated.ts`. Keep `GEMINI_DEADLINE_MS` comfortably under Devvit's 30 s HTTP limit.
 
 ### Change the post body assembly order
 
@@ -358,6 +381,7 @@ Currently one playlist ID per subreddit installation. To fan out, the `check_new
 - Module system: `"type": "module"` in `package.json`. All imports use `.js` extensions (even for `.ts` source files) per Node ESM + TypeScript bundler conventions.
 - `tsconfig.json` uses `"moduleResolution": "Bundler"` (Devvit requirement).
 - Compiled `.js` files are **not committed** (`src/*.js` is gitignored). Devvit compiles TypeScript during `devvit upload`. Run `npm run type-check` to verify types locally before deploying.
+- `npm run type-check` (`tsc --build`) **does emit** `.js` next to each source. Bundlers resolve `./x.js` imports to those files when they exist, so a stale `src/geminiModels.generated.js` would win over a freshly synced `.ts`. `predeploy` therefore runs `models:sync` and then `type-check`; re-run `type-check` after a manual sync too.
 - The `devDependencies` include `dotenv-cli` to inject a `.env` file during `devvit playtest` (the `dev` script). Create a `.env` file if needed for local playtest overrides — it is gitignored.
 - **Devvit releases frequently.** Before starting work, check for a newer version of `@devvit/public-api` and `devvit` by running `npm outdated @devvit/public-api devvit`. If a newer version is available, update both packages (`npm install @devvit/public-api@latest devvit@latest`) and run `npm run type-check` to catch any breaking changes before making other modifications.
 
@@ -370,7 +394,8 @@ Currently one playlist ID per subreddit installation. To fan out, the `check_new
 | `npm run dev` | `devvit playtest` — installs to test subreddit, streams live logs |
 | `npm run deploy` | `devvit upload` — uploads to App Directory (not yet published) |
 | `npm run launch` | `devvit publish` — publishes the app publicly |
-| `npm run type-check` | TypeScript type check only, no emit |
+| `npm run type-check` | TypeScript type check (also emits `.js` next to sources; see build notes) |
+| `npm run models:sync` | Refresh `src/geminiModels.generated.ts` from the Gemini API (needs `GEMINI_API_KEY` in `.env`); runs automatically before `deploy` |
 
 ---
 
@@ -378,7 +403,7 @@ Currently one playlist ID per subreddit installation. To fan out, the `check_new
 
 A React + Vite SPA that lets mods preview what Gemini will generate before deploying the bot. It is a pure client-side app — no server required.
 
-**Shared code:** The preview app imports `EpisodeData`, `GeneratedPost` from `src/types.ts` and all four utilities from `src/postUtils.ts` via the `@shared` path alias (configured in `preview-site/vite.config.ts` and `tsconfig.json`). **Never re-declare these types or functions inside the preview app** — edit the shared source.
+**Shared code:** The preview app imports types from `src/types.ts`, the utilities from `src/postUtils.ts`, and the model catalog helpers from `src/geminiModels.ts` via the `@shared` path alias (configured in `preview-site/vite.config.ts` and `tsconfig.json`). Its model list is the same build-time catalog the bot offers, and the thinking-level select appears only for models that accept more than one level; the chosen level is sent as `thinkingConfig.thinkingLevel` (`none` → `thinkingBudget: 0`) on the native SDK. **Never re-declare these types or functions inside the preview app** — edit the shared source.
 
 **Netlify deployment:** Configured in `netlify.toml` at the repo root. Base dir is `preview-site`, publish dir is `dist`. Do **not** set `GEMINI_API_KEY` as a Netlify env var — it would be baked into the public JS bundle. Users supply their own key via the UI; it is stored in `localStorage`.
 

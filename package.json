@@ -7,18 +7,20 @@
   "scripts": {
     "build": "tsc -p src/tsconfig.json",
     "watch": "tsc -p src/tsconfig.json --watch",
+    "predeploy": "npm run models:sync && npm run type-check",
     "deploy": "devvit upload",
+    "models:sync": "dotenv -e .env -- node scripts/sync-gemini-models.mjs",
     "dev": "dotenv -e .env -- devvit playtest",
     "login": "devvit login",
     "launch": "devvit publish --public",
     "type-check": "tsc --build"
   },
   "dependencies": {
-    "@devvit/public-api": "0.14.7",
-    "@devvit/web": "0.14.7"
+    "@devvit/public-api": "0.14.8",
+    "@devvit/web": "0.14.8"
   },
   "devDependencies": {
-    "devvit": "0.14.7",
+    "devvit": "0.14.8",
     "dotenv-cli": "11.0.0",
     "typescript": "6.0.3"
   }
