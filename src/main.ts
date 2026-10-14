@@ -108,7 +108,7 @@ Devvit.addSettings([
     type: 'boolean',
     name: 'requireModApproval',
     label: 'Hold posts for mod approval',
-    helpText: 'When enabled, generated posts are queued in the mod inbox for review instead of being submitted immediately. Use "Review pending post" in Mod Tools to publish, discard, or reject.',
+    helpText: 'When enabled, generated posts are queued in the mod inbox for review instead of being submitted immediately. Use "Review pending post" in the subreddit\'s "…" menu to publish, discard, or reject.',
     defaultValue: false,
     scope: SettingScope.Installation,
   },
@@ -154,8 +154,11 @@ interface PendingPost {
 
 type RedditClient = Devvit.Context['reddit'];
 
+/** Closing line of failure PMs: things a mod can act on (they can't read app logs). */
+const FAILURE_HELP = 'Please try again later. If it keeps failing, check the Google API key in "Configure bot" (in the subreddit\'s "…" menu) and the app settings in Mod Tools → Installed Apps, or report it at https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/issues.';
+
 /**
- * Send a failure PM to the appropriate recipients.
+ * Send a PM (usually a failure report) to the appropriate recipients.
  *
  * Priority: if notificationMods are configured, PM each of them.
  * Otherwise fall back to the individual mod who triggered the action
@@ -347,7 +350,7 @@ const configureBotForm = Devvit.createForm(
 
 Devvit.addMenuItem({
   label: 'Configure bot',
-  description: 'Set the Google API key (YouTube + Gemini) and which sticky slot episode posts use; optionally override the Gemini model and thinking level.',
+  description: 'API key, pin slot, and Gemini model.',
   location: 'subreddit',
   forUserType: 'moderator',
   onPress: async (_event, context) => {
@@ -478,14 +481,15 @@ const reviewPendingPostForm = Devvit.createForm(
     // Cancel any scheduled auto-approve job — we're posting immediately
     await cancelAutoApproveJob(redis, scheduler);
 
-    await scheduler.runJob({ name: 'post_pending_episode', runAt: new Date() });
-    context.ui.showToast('Publishing pending post...');
+    const currentUser = await context.reddit.getCurrentUser();
+    await scheduler.runJob({ name: 'post_pending_episode', runAt: new Date(), data: { triggeredBy: currentUser?.username ?? null } });
+    context.ui.showToast('Publishing. The post appears within 30 seconds; otherwise you\'ll get a message.');
   }
 );
 
 Devvit.addMenuItem({
   label: 'Review pending post',
-  description: 'Edit, then publish, discard, or reject the post waiting for mod approval.',
+  description: 'Publish, edit, discard, or reject the queued post.',
   location: 'subreddit',
   forUserType: 'moderator',
   onPress: async (_event, context) => {
@@ -548,17 +552,31 @@ Devvit.addSchedulerJob({
       ]);
       notificationMods = notificationModsSetting.split(',').map(u => u.trim()).filter(Boolean);
 
+      // Manual runs always end in something the mod can see: a new post, a
+      // failure PM, or one of these PMs. Cron runs stay quiet when there's
+      // nothing to do, so an unconfigured install isn't PM'd every 30 minutes.
+      const manual = event.data?.manual === true;
+      const tellTriggeringMod = async (subject: string, text: string): Promise<void> => {
+        if (manual) {
+          await sendFailureNotification(reddit, [], await redis.get('check_triggered_by'), subject, text);
+        }
+      };
+
       // 2. Validate required settings
+      const notConfigured = async (problem: string): Promise<void> => {
+        console.error(`[bot] ${problem}`);
+        await tellTriggeringMod('Video check could not run', problem);
+      };
       if (!googleApiKey) {
-        console.error('[bot] Google API key not configured. Use the "Configure bot" mod menu item.');
+        await notConfigured('No Google API key is saved. Add one with "Configure bot" in the subreddit\'s "…" menu.');
         return;
       }
       if (!playlistId) {
-        console.error('[bot] YouTube Playlist ID not configured. Set it in the app settings.');
+        await notConfigured('No YouTube Playlist ID is set. Add it in the app settings (Mod Tools → Installed Apps).');
         return;
       }
       if (!systemPrompt) {
-        console.error('[bot] System prompt not configured. Set it in the app settings.');
+        await notConfigured('No System Prompt is set. Add it in the app settings (Mod Tools → Installed Apps).');
         return;
       }
 
@@ -577,6 +595,10 @@ Devvit.addSchedulerJob({
 
       if (!videos.length) {
         log('No videos found in YouTube playlist.');
+        await tellTriggeringMod(
+          'Video check: no videos found',
+          `The YouTube playlist ${playlistId} returned no videos. Check the YouTube Playlist ID in the app settings (Mod Tools → Installed Apps).`,
+        );
         return;
       }
 
@@ -655,6 +677,10 @@ Devvit.addSchedulerJob({
 
       if (!episodeToPost) {
         log('No new video to post.');
+        await tellTriggeringMod(
+          'Video check: nothing new',
+          `The bot checked the playlist for r/${subredditName}. Every video has already been posted, skipped, or excluded, so there is nothing new to post.`,
+        );
         return;
       }
 
@@ -667,6 +693,10 @@ Devvit.addSchedulerJob({
       const holdForApproval = requireModApproval || forceRepost;
       if (holdForApproval && await redis.get(REDIS_KEY_PENDING_POST)) {
         log('A post is already pending mod approval. Skipping until it is published, discarded, or rejected.');
+        await tellTriggeringMod(
+          'Video check: a post is awaiting approval',
+          `A generated post is waiting for review on r/${subredditName}. Use "Review pending post" in the subreddit's "…" menu to publish, discard, or reject it; the bot won't generate another post until then.`,
+        );
         return;
       }
 
@@ -721,7 +751,7 @@ Devvit.addSchedulerJob({
           ``,
           `**Video:** ${episode.link}`,
           ``,
-          `Use **"Review pending post"** in **Mod Tools** on r/${subredditName} to edit the post, then publish it, discard it (the video is treated as unseen on the next check), or reject the video (never post it).`,
+          `Use **"Review pending post"** in the **"…"** menu on r/${subredditName} to edit the post, then publish it, discard it (the video is treated as unseen on the next check), or reject the video (never post it).`,
           autoApproveNote,
         ].join('\n');
 
@@ -801,7 +831,7 @@ Devvit.addSchedulerJob({
         notificationMods,
         triggeredBy,
         'Video check failed',
-        `The video check on r/${context.subredditName!} failed with the following error:\n\n    ${err}\n\nPlease try again later. If the error persists, check the app logs for more details.`,
+        `The video check on r/${context.subredditName!} failed with the following error:\n\n    ${err}\n\n${FAILURE_HELP}`,
       );
     }
   },
@@ -814,7 +844,7 @@ Devvit.addSchedulerJob({
 
 Devvit.addSchedulerJob({
   name: 'post_pending_episode',
-  onRun: async (_event, context) => {
+  onRun: async (event, context) => {
     const { redis, reddit, settings } = context;
     let notificationMods: string[] = [];
 
@@ -860,13 +890,16 @@ Devvit.addSchedulerJob({
       console.log(`[bot] Pending episode posted: "${pending.title}"`);
     } catch (err) {
       console.error(`[bot] Failed to post pending episode: ${err}`);
-      const triggeredBy = await redis.get('check_triggered_by');
+      // Publish passes the mod who pressed it; the auto-approve timer doesn't.
+      const triggeredBy = typeof event.data?.triggeredBy === 'string'
+        ? event.data.triggeredBy
+        : await redis.get('check_triggered_by');
       await sendFailureNotification(
         reddit,
         notificationMods,
         triggeredBy,
         'Episode post failed',
-        `Failed to post the pending episode on r/${context.subredditName} with error:\n\n    ${err}\n\nThe episode content is still saved. Try using "Review pending post" in Mod Tools to retry.`,
+        `Failed to post the pending episode on r/${context.subredditName} with error:\n\n    ${err}\n\nThe episode content is still saved. Try "Review pending post" in the subreddit's "…" menu to retry.`,
       );
     }
   },
@@ -904,7 +937,6 @@ Devvit.addTrigger({
 // ---------------------------------------------------------------------------
 
 async function triggerCheck(context: Devvit.Context, forceRepost: boolean): Promise<void> {
-  context.ui.showToast('Checking for new videos...');
   try {
     const currentUser = await context.reddit.getCurrentUser();
     if (currentUser) {
@@ -913,12 +945,12 @@ async function triggerCheck(context: Devvit.Context, forceRepost: boolean): Prom
     await context.scheduler.runJob({
       name: 'check_new_episodes',
       runAt: new Date(),
-      data: { forceRepost },
+      data: { forceRepost, manual: true },
     });
-    context.ui.showToast('Video check triggered! Check logs for results.');
+    context.ui.showToast('Checking for new videos. A new post appears within 30 seconds; otherwise you\'ll get a message.');
   } catch (err) {
     console.error(`[bot] Manual trigger failed: ${err}`);
-    context.ui.showToast('Failed to trigger video check. See logs.');
+    context.ui.showToast('Couldn\'t start the video check. Please try again.');
   }
 }
 
@@ -945,7 +977,7 @@ const playtestCheckForm = Devvit.createForm(
 
 Devvit.addMenuItem({
   label: 'Check for new videos',
-  description: 'Manually check the YouTube playlist for new videos and generate a post if one is found.',
+  description: 'Post the newest video now, if there is one.',
   location: 'subreddit',
   forUserType: 'moderator',
   onPress: async (_event, context) => {
@@ -990,15 +1022,13 @@ Devvit.addSchedulerJob<RegenerateJobData>({
       const appendText = (await settings.get<string>('appendText')) || '';
 
       if (!googleApiKey) {
-        console.error('[bot] Google API key not configured. Use the "Configure bot" mod menu item.');
-        return;
+        throw new Error('No Google API key is saved. Add one with "Configure bot" in the subreddit\'s "…" menu.');
       }
 
       console.log(`[bot] Fetching video ${videoId} for regeneration...`);
       const episode = await fetchYouTubeVideoById(googleApiKey, videoId);
       if (!episode) {
-        console.error(`[bot] Video ${videoId} not found on YouTube.`);
-        return;
+        throw new Error(`YouTube video ${videoId} was not found. It may have been made private or deleted.`);
       }
 
       console.log(`[bot] Regenerating discussion for "${episode.title}" with ${model} (thinking: ${thinkingLevel ?? 'model default'})...`);
@@ -1020,7 +1050,7 @@ Devvit.addSchedulerJob<RegenerateJobData>({
         notificationMods,
         triggeredBy,
         'Discussion regeneration failed',
-        `Regenerating a discussion comment on r/${context.subredditName} failed with the following error:\n\n    ${err}\n\nPlease try again later. If the error persists, check the app logs for more details.`,
+        `Regenerating a discussion comment on r/${context.subredditName} failed with the following error:\n\n    ${err}\n\n${FAILURE_HELP}`,
       );
     }
   },
@@ -1029,10 +1059,10 @@ Devvit.addSchedulerJob<RegenerateJobData>({
 async function triggerRegeneration(context: Devvit.Context, data: RegenerateJobData): Promise<void> {
   try {
     await context.scheduler.runJob({ name: 'regenerate_discussion', runAt: new Date(), data });
-    context.ui.showToast('Regeneration triggered! Check logs for results.');
+    context.ui.showToast('Regenerating. The comment updates within 30 seconds; otherwise you\'ll get a message.');
   } catch (err) {
     console.error(`[bot] Regenerate trigger failed: ${err}`);
-    context.ui.showToast('Failed to trigger regeneration. See logs.');
+    context.ui.showToast('Couldn\'t start the regeneration. Please try again.');
   }
 }
 
@@ -1122,7 +1152,7 @@ const regenerateDiscussionForm = Devvit.createForm(
 
 Devvit.addMenuItem({
   label: 'Regenerate discussion',
-  description: 'Re-run Gemini for this episode post and rewrite its discussion comment.',
+  description: 'Rewrite this post\'s discussion comment.',
   location: 'post',
   forUserType: 'moderator',
   onPress: async (event, context) => {

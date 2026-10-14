@@ -21,7 +21,7 @@ Issues & Requests: [HeyItsGilbert/YouTubeGeminiPostDevvit](https://github.com/He
 - **Notifies the triggering mod by PM** if a manually triggered action fails
 - **Optional mod approval gate** — hold generated posts for review before publishing, with an optional auto-approve timer
 
-Moderators get three items in the subreddit **Mod Tools** menu:
+Moderators get three items in the subreddit's **"…"** menu (next to Mod Tools):
 
 - **Configure bot** — set the Google API key and which sticky slot (1 or 2)
   episode posts take. Under **Advanced (optional)** you can override the
@@ -42,7 +42,7 @@ the triggering mod receives a Reddit PM with the error details. Scheduled
 ## API Key
 
 1. Navigate to your subreddit.
-2. Open the **Mod Tools** menu and select **Configure bot**.
+2. Open the subreddit's **"…"** menu and select **Configure bot**.
 3. Paste your key into the **Google API Key** field and click **Save**. Leave it blank later
    to keep the saved key while changing the pin slot.
 

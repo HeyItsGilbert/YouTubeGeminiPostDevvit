@@ -41,7 +41,7 @@ This installs the app to your test subreddit and streams logs.
 Each subreddit stores its own Google API key and Gemini model via a mod menu action.
 
 1. Navigate to your subreddit.
-2. Open the **Mod Tools** menu and select **Configure bot**.
+2. Open the subreddit's **"…"** menu (next to Mod Tools) and select **Configure bot**.
 3. Paste your key, pick a pin slot, and click **Save**.
 4. Optional, under **Advanced**: override the Gemini model (default `gemini-flash-latest`) or turn on **Choose a thinking level** to pick one on the next screen.
 

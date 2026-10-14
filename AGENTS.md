@@ -293,7 +293,7 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | `regenerate_draft:<userId>` | string (JSON `RegenerateJobData`), 1 h expiry | "Regenerate discussion" step 1 | "Regenerate discussion" step 2 (then deleted) | Carries step 1's answers to the thinking-level step. |
 | `episode_checker_job_id` | string | `ensureCheckerScheduled` | — | ID of the current checker cron job, for debugging. The scheduler's `listJobs()` is the source of truth. |
 | `episode_checker_verified_at` | string (epoch ms) | `ensureCheckerScheduled` | `ensureCheckerScheduled` | When the checker job was last verified; throttles 'heal' to once per 30 minutes. |
-| `check_triggered_by` | string | "Check for new videos" menu item / playtest form | `check_new_episodes` error handler, `post_pending_episode` error handler | Username of the mod who manually triggered; used to send a PM on failure |
+| `check_triggered_by` | string | "Check for new videos" menu item / playtest form | `check_new_episodes` (manual-run outcome PMs and error handler), `post_pending_episode` error handler (when no `triggeredBy` job data) | Username of the mod who manually triggered; used to PM outcomes and failures |
 | `pending_post` | string (JSON) | `check_new_episodes` (approval gate path), "Review pending post" form (Publish writes edits back) | `check_new_episodes` (skips generation while set), `post_pending_episode`, "Review pending post" menu item and form | Serialised `PendingPost` object holding generated title, body, url, videoId, videoTitle, and generatedAt timestamp. Deleted when the post is published, discarded, or rejected. |
 | `pending_post_job_id` | string | `check_new_episodes` (when `autoApproveWindowMinutes > 0`) | "Review pending post" form | Scheduler job ID for the auto-approve timer. Cancelled and deleted when a mod acts first. |
 
@@ -307,8 +307,8 @@ Keys no longer written (may linger on older installs, safe to delete): `last_epi
 
 | Job name | Schedule | Trigger |
 |---|---|---|
-| `check_new_episodes` | `*/30 * * * *` (cron) | Kept alive by `ensureCheckerScheduled` (see below). Also triggered immediately by "Check for new videos" via `runAt: new Date()` with job data `{ forceRepost }` (`true` only from the playtest form). |
-| `post_pending_episode` | No fixed schedule | Triggered immediately by the "Review pending post" form's Publish action. Also scheduled at `now + autoApproveWindowMinutes` by `check_new_episodes` when `requireModApproval` is true and a window is configured. |
+| `check_new_episodes` | `*/30 * * * *` (cron) | Kept alive by `ensureCheckerScheduled` (see below). Also triggered immediately by "Check for new videos" via `runAt: new Date()` with job data `{ forceRepost, manual: true }` (`forceRepost` is `true` only from the playtest form). A manual run always ends visibly for the mod: a new post, a failure PM, or a PM saying why nothing was posted (missing settings, no videos, nothing new, post awaiting approval). Cron runs stay silent in those cases. |
+| `post_pending_episode` | No fixed schedule | Triggered immediately by the "Review pending post" form's Publish action with job data `{ triggeredBy }`, so a failure PMs the mod who pressed it. Also scheduled at `now + autoApproveWindowMinutes` by `check_new_episodes` when `requireModApproval` is true and a window is configured. |
 | `regenerate_discussion` | No fixed schedule | Only triggered by the "Regenerate discussion" post menu forms via `runAt: new Date()`, with job data `{ videoId, commentId, systemPrompt, model, thinkingLevel, triggeredBy }`. |
 
 Blocks apps cannot declare a cron in `devvit.json` (`scheduler.tasks` requires a `server` entry point), so the checker cron is created at runtime by `ensureCheckerScheduled` in `src/checkerSchedule.ts`. On `AppInstall`/`AppUpgrade` it runs in `'reset'` mode: cancel every `check_new_episodes` cron and schedule a fresh one, so a job from an older version is replaced. Those events alone proved unreliable — a playtest install was found with no job, no stored job ID, and no trigger log across six version changes — so `'heal'` mode also runs on every mod menu press and on `PostSubmit`/`CommentSubmit`. Heal is throttled to once per 30 minutes via `episode_checker_verified_at`, schedules the job only if `listJobs()` has none, and cancels duplicates left by concurrent heals. It never throws.
@@ -343,6 +343,8 @@ All log lines are prefixed with a bracketed module tag so they're filterable in 
 
 Errors use `console.error`; informational output uses `console.log`; warnings use `console.warn`. Error paths inside `catch` blocks log the error and either return (non-fatal) or rethrow (fatal — e.g., pin failure in `managePins`).
 
+**Missing log lines don't mean a job died.** Observed on a playtest install (2026-10-14): `devvit logs` (live and `--since`) kept a scheduler job's first ~4 s of output, then nothing, while the job kept running and finished (the discussion comment updated). A fast job (3.5 s) logged completely. So don't diagnose timeouts from where logs stop; check the visible outcome (post, comment, or PM). Mods get either the result or a PM, by design, which is why every manual action must end in one of the two.
+
 ---
 
 ## How to make common changes
@@ -365,6 +367,9 @@ The body is assembled by `assemblePostBody` in `src/postUtils.ts`. It becomes th
 ### Add a new mod menu item
 
 Use `Devvit.addMenuItem` in `src/main.ts`. For actions that take time, schedule a one-off job with `runAt: new Date()` and show a confirmation toast — do not run long operations directly inside `onPress`.
+
+- Keep `description` to a short phrase: Reddit renders every description in the subreddit's "…" menu (where subreddit menu items appear, next to the Mod Tools button), so long ones make the menu grow. When pointing mods at a menu item in a message, say "the subreddit's "…" menu", not "Mod Tools".
+- Mods cannot read app logs. Never tell them to "check logs". Toasts say what they'll see (e.g. "The post appears within 30 seconds; otherwise you'll get a message"), and the job must make that true: PM the triggering mod on failure, and on any outcome that would otherwise be invisible.
 
 ### Change the pin rotation behavior
 
