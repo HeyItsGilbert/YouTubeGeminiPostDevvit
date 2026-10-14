@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-14
+
 ### Added
 
 - Optional **Advanced** overrides in **Configure bot**: pick a specific Gemini
@@ -26,6 +28,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   switch to the new default; pick a model under **Configure bot → Advanced**
   to keep a specific one.
 - Upgraded Devvit to 0.14.8.
+- Messages no longer tell mods to "check logs", which they can't see. Toasts
+  say what to expect (the post or comment appears within 30 seconds,
+  otherwise a message arrives), and a manual "Check for new videos" now
+  always ends in a new post or a PM: nothing new, a post awaiting approval,
+  missing settings, or the failure. Failure PMs for Publish go to the mod who
+  pressed it, and regeneration failures (missing key, deleted video) are now
+  PM'd.
+- Messages point to the subreddit's "…" menu, where the bot's menu items
+  live, not "Mod Tools". Shorter mod menu descriptions.
 
 ### Fixed
 
@@ -235,7 +246,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   queue to exercise the full moderation workflow.
 
 [Unreleased]:
-  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.2.0...HEAD
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.3.0...HEAD
+[0.3.0]:
+  https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.2.0...v0.3.0
 [0.2.0]:
   https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/compare/v0.1.8...v0.2.0
 [0.1.7]:

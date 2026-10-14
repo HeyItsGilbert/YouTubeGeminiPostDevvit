@@ -2,7 +2,7 @@
 import type { GeminiModelCatalog } from './types.js';
 
 export const GEMINI_MODEL_CATALOG: GeminiModelCatalog = {
-  "fetchedAt": "2026-10-13T19:25:54.352Z",
+  "fetchedAt": "2026-10-14T15:24:39.473Z",
   "models": [
     {
       "id": "gemini-flash-latest",
