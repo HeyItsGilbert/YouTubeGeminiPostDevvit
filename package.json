@@ -5,8 +5,8 @@
   "license": "BSD-3-Clause",
   "type": "module",
   "scripts": {
-    "build": "tsc -p src/tsconfig.json",
-    "watch": "tsc -p src/tsconfig.json --watch",
+    "build": "vite build",
+    "watch": "vite build --watch",
     "predeploy": "npm run models:sync && npm run type-check",
     "deploy": "devvit upload",
     "models:sync": "dotenv -e .env -- node scripts/sync-gemini-models.mjs",
@@ -16,12 +16,19 @@
     "type-check": "tsc --build"
   },
   "dependencies": {
-    "@devvit/public-api": "0.14.8",
-    "@devvit/web": "0.14.8"
+    "@devvit/start": "0.15.0",
+    "@devvit/web": "0.15.0",
+    "@hono/node-server": "^2.0.3",
+    "hono": "4.13.13"
   },
   "devDependencies": {
-    "devvit": "0.14.8",
+    "devvit": "0.15.0",
     "dotenv-cli": "11.0.0",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "vite": "8.3.3"
+  },
+  "allowScripts": {
+    "esbuild@0.25.9": true,
+    "protobufjs@7.6.5": true
   }
 }

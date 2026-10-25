@@ -1,9 +1,28 @@
 {
-  "extends": "@devvit/public-api/devvit.tsconfig.json",
+  "$schema": "https://json.schemastore.org/tsconfig.json",
   "compilerOptions": {
-    "types": [],
-    "allowJs": false,
-    "checkJs": false
+    "composite": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitOverride": true,
+    "types": ["node"],
+    "noUncheckedSideEffectImports": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "resolveJsonModule": true,
+    "strict": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "skipLibCheck": true,
+    "skipDefaultLibCheck": true,
+    "sourceMap": true,
+    "target": "ES2022",
+    "outDir": "dist/types",
+    "tsBuildInfoFile": "dist/types/tsconfig.tsbuildinfo"
   },
+  "include": ["src/**/*", "vite.config.ts"],
   "exclude": ["**/node_modules", "**/.*/", "preview-site", "dist", "webroot"]
 }

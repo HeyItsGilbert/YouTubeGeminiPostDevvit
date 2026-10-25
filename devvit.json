@@ -1,8 +1,9 @@
 {
   "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
   "name": "youtube-gemini",
-  "blocks": {
-    "entry": "src/main.ts"
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.cjs"
   },
   "permissions": {
     "reddit": {
@@ -16,6 +17,141 @@
         "generativelanguage.googleapis.com"
       ]
     }
+  },
+  "settings": {
+    "subreddit": {
+      "youtubePlaylistId": {
+        "type": "string",
+        "label": "YouTube Playlist ID",
+        "helpText": "Playlist to monitor for new videos. You can use a regular playlist ID (e.g. PLabc123) or a channel ID (e.g. UCabc123) — the app will automatically use that channel's Uploads playlist, which is always sorted newest-first."
+      },
+      "excludeTitleKeywords": {
+        "type": "string",
+        "label": "Exclude Title Keywords (optional)",
+        "helpText": "Comma-separated list of keywords. Videos whose titles contain any of these words are permanently skipped (e.g. \"trailer, short, bonus\").",
+        "defaultValue": ""
+      },
+      "systemPrompt": {
+        "type": "paragraph",
+        "label": "System Prompt",
+        "helpText": "Instructions for Gemini. First line of output is used as the post title."
+      },
+      "botFlairEmoji": {
+        "type": "string",
+        "label": "Bot Flair Emoji (optional)",
+        "helpText": "Emoji shown in the bot's author flair on this subreddit, e.g. \ud83c\udf99\ufe0f",
+        "defaultValue": ""
+      },
+      "botFlairText": {
+        "type": "string",
+        "label": "Bot Flair Text (optional)",
+        "helpText": "Display name shown in the bot's author flair on this subreddit, e.g. \"Podcast Bot\".",
+        "defaultValue": ""
+      },
+      "prependText": {
+        "type": "paragraph",
+        "label": "Prepend Text (optional)",
+        "helpText": "Text added to the top of every generated post body.",
+        "defaultValue": ""
+      },
+      "appendText": {
+        "type": "paragraph",
+        "label": "Append Text (optional)",
+        "helpText": "Text added to the bottom of every generated post body.",
+        "defaultValue": ""
+      },
+      "flairName": {
+        "type": "string",
+        "label": "Post Flair (optional)",
+        "helpText": "Exact name of a post flair template on this subreddit. Leave blank for no flair.",
+        "defaultValue": ""
+      },
+      "notificationMods": {
+        "type": "string",
+        "label": "Notification Recipients (optional)",
+        "helpText": "Comma-separated Reddit usernames to notify when a post is queued for approval.",
+        "defaultValue": ""
+      },
+      "requireModApproval": {
+        "type": "boolean",
+        "label": "Hold posts for mod approval",
+        "helpText": "When enabled, generated posts are queued in the mod inbox for review instead of being submitted immediately.",
+        "defaultValue": false
+      },
+      "autoApproveWindowMinutes": {
+        "type": "number",
+        "label": "Auto-approve window (minutes, 0 = off)",
+        "helpText": "Only applies when \"Hold posts for mod approval\" is on.",
+        "defaultValue": 0
+      }
+    }
+  },
+  "menu": {
+    "items": [
+      {
+        "label": "[Trial] Debug settings + Redis",
+        "description": "Experiment: show settings + Redis key survival",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/debug-state"
+      },
+      {
+        "label": "[Trial] Toast + form combo",
+        "description": "Experiment: does a UiResponse with both showToast and showForm show both?",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/toast-and-form"
+      },
+      {
+        "label": "[Trial] Check for new videos",
+        "description": "Experiment: fire check_new_episodes now",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/check-now"
+      },
+      {
+        "label": "[Trial] Form with disabled field",
+        "description": "Experiment: does a disabled field's value arrive on submit?",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/disabled-field-form"
+      },
+      {
+        "label": "[Trial] postId on post-menu form",
+        "description": "Experiment: is context.postId set on a post-menu form submit?",
+        "location": "post",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/post-id-form"
+      }
+    ]
+  },
+  "forms": {
+    "toastAndForm": "/internal/form/toast-and-form-submit",
+    "disabledField": "/internal/form/disabled-field-submit",
+    "postIdForm": "/internal/form/post-id-submit"
+  },
+  "triggers": {
+    "onAppInstall": "/internal/triggers/on-app-install",
+    "onAppUpgrade": "/internal/triggers/on-app-upgrade",
+    "onPostSubmit": "/internal/triggers/on-post-submit",
+    "onCommentSubmit": "/internal/triggers/on-comment-submit"
+  },
+  "scheduler": {
+    "tasks": {
+      "check_new_episodes": {
+        "endpoint": "/internal/scheduler/check-new-episodes"
+      },
+      "post_pending_episode": {
+        "endpoint": "/internal/scheduler/post-pending-episode"
+      },
+      "regenerate_discussion": {
+        "endpoint": "/internal/scheduler/regenerate-discussion"
+      }
+    }
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch"
   },
   "marketingAssets": {
     "icon": "assets/icon.png"
