@@ -68,6 +68,21 @@ menu.post('/check-now', async (c) => {
   return c.json<UiResponse>({ showToast: 'Queued check_new_episodes; see devvit logs.' }, 200);
 });
 
+/** Checklist item: does a queued post_pending_episode one-off fire into the Web endpoint? */
+menu.post('/queue-pending-post', async (c) => {
+  const runAt = new Date(Date.now() + 60_000);
+  const jobId = await schedulerClient.runJob({
+    name: 'post_pending_episode',
+    runAt,
+    data: { triggeredBy: context.username ?? null },
+  });
+  console.log(`[trial] Queued post_pending_episode — job ID: ${jobId}, runAt: ${runAt.toISOString()}`);
+  return c.json<UiResponse>(
+    { showToast: `Queued post_pending_episode for ${runAt.toISOString()}; check devvit logs in ~1 min.` },
+    200
+  );
+});
+
 /** Checklist item: does a disabled field's value arrive on submit? */
 menu.post('/disabled-field-form', async (c) => {
   await c.req.json<MenuItemRequest>();

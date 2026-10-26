@@ -110,6 +110,13 @@
         "endpoint": "/internal/menu/check-now"
       },
       {
+        "label": "[Trial] Queue pending-post job",
+        "description": "Experiment: does a queued post_pending_episode fire into the Web endpoint?",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/queue-pending-post"
+      },
+      {
         "label": "[Trial] Form with disabled field",
         "description": "Experiment: does a disabled field's value arrive on submit?",
         "location": "subreddit",
