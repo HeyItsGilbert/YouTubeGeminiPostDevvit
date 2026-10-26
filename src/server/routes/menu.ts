@@ -6,8 +6,9 @@ import { listAllJobsForDebug, listUserJobsForDebug } from '../checkerSchedule.js
 export const menu = new Hono();
 
 const REDIS_KEYS_TO_DUMP = [
+  // `video_registry` is excluded: it's a Redis hash (see `hLen` below), and
+  // `redis.get()` on a hash throws WRONGTYPE — this bit the first live run.
   'google_api_key',
-  'video_registry',
   'pending_post',
   'pending_post_job_id',
   'last_episode_sticky_slot',
