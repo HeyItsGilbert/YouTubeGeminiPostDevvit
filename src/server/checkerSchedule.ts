@@ -1,10 +1,12 @@
 /**
  * Keeps the recurring `check_new_episodes` cron job alive.
  *
- * Blocks apps cannot declare a cron in devvit.json (that needs a server
- * entry point), so the job is created at runtime. AppInstall/AppUpgrade alone
- * proved unreliable — an install can end up with no job and no log — so the
- * app also re-verifies the job on mod actions and subreddit activity.
+ * The job is declared in devvit.json without a `cron` field (satisfying Devvit
+ * Web's "every job must be declared" requirement) but is actually scheduled at
+ * runtime, tagged as a USER-managed job rather than a devvit.json-managed one.
+ * AppInstall/AppUpgrade alone proved unreliable — an install can end up with
+ * no job and no log — so the app also re-verifies the job on mod actions and
+ * subreddit activity.
  */
 
 export const CHECKER_JOB_NAME = 'check_new_episodes';
@@ -16,6 +18,11 @@ const REDIS_KEY_VERIFIED_AT = 'episode_checker_verified_at';
 /** Re-verify at most this often; matches the cron interval. */
 const VERIFY_INTERVAL_MS = 30 * 60 * 1000;
 
+/** `2` = `ScheduledActionManager.USER` from `@devvit/scheduler` — kept as a
+ * local numeric constant rather than importing the SDK enum, so this module
+ * keeps accepting a minimal, structurally-typed scheduler client. */
+const USER_MANAGED = 2;
+
 type ListedJob = { id: string; name: string; cron?: string };
 
 type ScheduleContext = {
@@ -24,7 +31,7 @@ type ScheduleContext = {
     set: (key: string, value: string) => Promise<unknown>;
   };
   scheduler: {
-    listJobs: () => Promise<ListedJob[]>;
+    listJobs: (managers?: number[]) => Promise<ListedJob[]>;
     runJob: (job: { name: string; cron: string }) => Promise<string>;
     cancelJob: (jobId: string) => Promise<void>;
   };
@@ -55,7 +62,7 @@ export async function ensureCheckerScheduled(
       }
     }
 
-    const checkers = (await scheduler.listJobs()).filter(
+    const checkers = (await scheduler.listJobs([USER_MANAGED])).filter(
       (job) => job.name === CHECKER_JOB_NAME && job.cron !== undefined,
     );
     const toCancel = mode === 'reset' ? checkers : checkers.slice(1);

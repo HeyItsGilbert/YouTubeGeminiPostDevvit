@@ -1,8 +1,9 @@
-import { type EpisodeData, type GeneratedPost, type ThinkingLevel } from './types.js';
-import { buildUserMessage, parseGeneratedResponse, applyPlaceholders } from './postUtils.js';
+import { type EpisodeData, type GeneratedPost, type ThinkingLevel } from '../types.js';
+import { buildUserMessage, parseGeneratedResponse, applyPlaceholders } from '../postUtils.js';
 
 // Uses the OpenAI-compatible endpoint to avoid colon-in-path URLs like
 // `:generateContent`, which Devvit's HTTP proxy misinterprets as gRPC routing.
+// Unverified under Devvit Web — carried forward unconfirmed, not simplified.
 const GEMINI_OPENAI_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 
 // Devvit cuts HTTP requests off at 30 s and can end the whole invocation
@@ -111,4 +112,3 @@ export async function generateEpisodePost(
 
   return parseGeneratedResponse(fullText, episode.title);
 }
-

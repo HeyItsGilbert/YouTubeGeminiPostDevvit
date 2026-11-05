@@ -1,11 +1,34 @@
-import { Devvit } from '@devvit/public-api';
+// A minimal, structurally-typed slice of the Reddit/Redis clients this module
+// actually calls — declared locally rather than imported from the Devvit SDK,
+// the same seam checkerSchedule.ts and videoRegistry.ts use. The real
+// `@devvit/reddit`/`@devvit/redis` singleton clients satisfy this shape
+// structurally, so no adapter is needed at the call site.
 
-// ----- Types ----------------------------------------------------------------
+/** Reddit "thing" ID prefixes this module handles — kept local rather than
+ * importing `T1`/`T3` from the Devvit SDK. */
+type PostId = `t3_${string}`;
+type CommentId = `t1_${string}`;
 
-type RedditClient = Devvit.Context['reddit'];
-type RedisClient = Devvit.Context['redis'];
-type PostId = Parameters<RedditClient['setPostFlair']>[0]['postId'];
-type CommentId = Parameters<RedditClient['getCommentById']>[0];
+type RedditClient = {
+  submitPost(options: { title: string; subredditName: string; url: string }): Promise<{
+    id: PostId;
+    addComment(options: { text: string }): Promise<{
+      id: CommentId;
+      distinguish(sticky?: boolean): Promise<unknown>;
+    }>;
+  }>;
+  getAppUser(): Promise<{ username: string } | undefined>;
+  setUserFlair(options: { subredditName: string; username: string; text: string }): Promise<unknown>;
+  getCommentById(id: CommentId): Promise<{ edit(options: { text: string }): Promise<unknown> }>;
+  getPostFlairTemplates(subredditName: string): Promise<Array<{ id: string; text?: string }>>;
+  setPostFlair(options: { subredditName: string; postId: PostId; flairTemplateId: string }): Promise<unknown>;
+  getPostById(id: PostId): Promise<{ sticky(position: 1 | 2): Promise<unknown> }>;
+};
+
+type RedisClient = {
+  get(key: string): Promise<string | undefined>;
+  set(key: string, value: string): Promise<unknown>;
+};
 
 /** IDs of the post and its discussion comment created by createEpisodePost. */
 export interface EpisodePost {
@@ -56,6 +79,10 @@ export async function applyBotFlair(
 
   try {
     const botUser = await reddit.getAppUser();
+    if (!botUser) {
+      console.error('[postManager] Failed to set bot flair: no app user found');
+      return;
+    }
     await reddit.setUserFlair({
       subredditName,
       username: botUser.username,
@@ -138,7 +165,7 @@ export async function applyFlair(
 export async function managePins(
   reddit: RedditClient,
   redis: RedisClient,
-  newPostId: string
+  newPostId: PostId
 ): Promise<void> {
   // Determine which slot the bot last used (default: 1)
   const slotStr = await redis.get('last_episode_sticky_slot');

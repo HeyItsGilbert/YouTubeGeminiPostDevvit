@@ -16,40 +16,58 @@ A [Devvit](https://developers.reddit.com/docs/) app that monitors a YouTube play
 
 ```
 src/
-  main.ts           Entry point. Registers settings, menu items, scheduler jobs,
-                    and triggers. Owns the top-level orchestration loop.
-  checkerSchedule.ts ensureCheckerScheduled: keeps exactly one check_new_episodes cron
-                    job alive ('reset' on install/upgrade, throttled 'heal' elsewhere).
-  episodeChecker.ts YouTube Data API v3 client. Fetches playlists and individual
-                    videos. Contains the exclusion-keyword filter.
-  llmClient.ts      Gemini API client (via OpenAI-compatible endpoint). Delegates
-                    message building and response parsing to postUtils.ts.
+  types.ts          Platform-agnostic shared interfaces: EpisodeData, GeneratedPost,
+                    VideoRecord, ThinkingLevel, GeminiModel, GeminiModelCatalog.
+  postUtils.ts      Platform-agnostic pure utilities shared with the preview web app:
+                    resolvePlaylistId, buildUserMessage, parseGeneratedResponse,
+                    assemblePostBody. No Devvit or browser dependencies — safe to
+                    import from both runtimes.
   geminiModels.ts   Platform-agnostic model catalog helpers shared with the preview
                     web app: GEMINI_MODELS (fastest first), DEFAULT_GEMINI_MODEL,
                     thinkingLevelsFor, resolveThinkingLevel, describe* labels.
   geminiModels.generated.ts
                     Committed model catalog (models + accepted thinking levels),
                     written by scripts/sync-gemini-models.mjs. Never hand-edit.
-  postManager.ts    Reddit operations: link post submission with a distinguished, stickied
+  *.test.ts         Vitest unit tests, colocated with the module under test.
+
+  server/           Devvit-specific code (Reddit/Redis/fetch, routes). Everything
+                    here is compiled by Vite into a single CommonJS server bundle
+                    (`dist/server/index.cjs`) — see docs/adr/0003.
+    index.ts        Hono app entry point. Mounts the route modules below under
+                    `/internal` and starts the server via `@devvit/web/server`.
+    checkerSchedule.ts ensureCheckerScheduled: keeps exactly one check_new_episodes
+                    runtime job alive ('reset' on install/upgrade, throttled 'heal'
+                    elsewhere).
+    episodeChecker.ts YouTube Data API v3 client. Fetches playlists and individual
+                    videos.
+    llmClient.ts    Gemini API client (via OpenAI-compatible endpoint). Delegates
+                    message building and response parsing to postUtils.ts.
+    postManager.ts  Reddit operations: link post submission with a distinguished, stickied
                     discussion comment, flair application, bot author flair, comment editing,
                     and pin rotation.
-  postUtils.ts      Platform-agnostic pure utilities shared with the preview web app:
-                    resolvePlaylistId, buildUserMessage, parseGeneratedResponse,
-                    assemblePostBody. No Devvit or browser dependencies — safe to
-                    import from both runtimes.
-  videoRegistry.ts  Redis hash-backed registry of every video the bot has seen.
+    videoRegistry.ts Redis hash-backed registry of every video the bot has seen.
                     Stores status (posted/pending/excluded/rejected/skipped/private) and
                     postId/commentId per video ID. Posted records are terminal: never
                     overwritten (except by a forced repost) or deleted.
-  types.ts          Shared interfaces: EpisodeData, GeneratedPost, VideoRecord,
-                    ThinkingLevel, GeminiModel, GeminiModelCatalog.
+    routes/
+      check-episodes.ts  `check_new_episodes` scheduler task: the full recurring
+                    video-check pipeline (the only feature route fully wired up so far).
+      pending-post.ts    `post_pending_episode` scheduler task — declared, stub only;
+                    full publish/discard/reject logic lands with "Review pending post".
+      regenerate.ts      `regenerate_discussion` scheduler task — declared, stub only;
+                    full logic lands with "Regenerate discussion".
+      triggers.ts   onAppInstall/onAppUpgrade/onPostSubmit/onCommentSubmit — all four
+                    call `ensureCheckerScheduled`.
 
 scripts/sync-gemini-models.mjs
                     `npm run models:sync` (and `predeploy`): lists Gemini models and
                     probes each thinking model per reasoning_effort level.
 
-devvit.json         App manifest. Declares entry point and allowed HTTP domains.
+devvit.json         App manifest. Declares the `server` entry, settings, scheduler
+                    tasks, and triggers (Devvit Web — see docs/adr/0003).
 package.json        Build scripts and dependencies.
+vite.config.ts       Builds the Hono server (and, later, any client) via `@devvit/start`.
+vitest.config.ts     Vitest configuration (`npm test`).
 tsconfig.json       TypeScript config (module:ESNext, moduleResolution:Bundler).
 netlify.toml        Netlify deploy config for the preview web app (base: preview-site/).
 SystemPrompt.example.md
@@ -60,6 +78,14 @@ preview-site/
                     and src/types.ts via the @shared path alias.
 ```
 
+**Note on current build status:** Only the `check_new_episodes` pipeline (the recurring
+video-check job) is wired up on Devvit Web so far. "Configure bot", "Check for new
+videos", "Review pending post", and "Regenerate discussion" (menu items, forms, and
+the `post_pending_episode`/`regenerate_discussion` job logic) still only exist in the
+sections below as the target design — they land in later tickets on the same
+migration. Their scheduler tasks are declared in `devvit.json` with stub route
+handlers so Devvit Web's "every job must be declared" requirement is met.
+
 ---
 
 ## Architecture and data flow
@@ -68,11 +94,11 @@ preview-site/
 
 ```
 AppInstall / AppUpgrade trigger        → ensureCheckerScheduled('reset')
-PostSubmit / CommentSubmit trigger,
-any mod menu press                     → ensureCheckerScheduled('heal', ≤ once per 30 min)
+PostSubmit / CommentSubmit trigger     → ensureCheckerScheduled('heal', ≤ once per 30 min)
+(mod menu press, once menus exist)       → ensureCheckerScheduled('heal', ≤ once per 30 min)
   └─► scheduler.runJob('check_new_episodes', cron='*/30 * * * *') when missing
 
-check_new_episodes job (src/main.ts)
+check_new_episodes job (src/server/routes/check-episodes.ts)
   │
   ├─ 1. Read all settings (concurrently) + Google API key and Gemini choice
   │     (getGeminiChoice: model + resolved thinking level) from Redis
@@ -170,8 +196,9 @@ Platform-agnostic pure utilities. **No Devvit APIs, no browser-only globals.** S
 | `resolvePlaylistId` | `(playlistId) → string` | Converts a `UC...` channel ID to its `UU...` uploads playlist ID; passes other IDs through unchanged. Used by both `episodeChecker.ts` and the preview app's playlist fetch. |
 | `buildUserMessage` | `(episode) → string` | Assembles the user-turn message sent to Gemini. Conditionally includes `Episode Number` and `Link` fields. |
 | `parseGeneratedResponse` | `(fullText, fallbackTitle) → GeneratedPost` | Splits raw Gemini output into title (first non-empty line) and body (everything after). |
-| `matchesExclusionFilter` | `(title, keywords) → boolean` | Returns true if the title contains any comma-separated keyword (case-insensitive substring match). Used by `main.ts` for the exclusion keyword setting and by the preview app's filter UI. |
-| `isPrivateVideo` | `(video) → boolean` | Returns true if the video title is exactly `"Private video"` — YouTube's placeholder for private/deleted content. Used by `main.ts` in `check_new_episodes` to record such videos with status `private`. |
+| `applyPlaceholders` | `(template, episode) → string` | Replaces `{Title}`/`{Description}`/`{Published}`/`{Link}`/`{EpisodeNumber}` tokens in a mod-supplied template. Applied to the system prompt, `prependText`, and `appendText` in `check-episodes.ts`. |
+| `matchesExclusionFilter` | `(title, keywords) → boolean` | Returns true if the title contains any comma-separated keyword (case-insensitive substring match). Used by the `check_new_episodes` route for the exclusion keyword setting and by the preview app's filter UI. |
+| `isPrivateVideo` | `(video) → boolean` | Returns true if the video title is exactly `"Private video"` — YouTube's placeholder for private/deleted content. Used by `check_new_episodes` to record such videos with status `private`. |
 | `assemblePostBody` | `(prependText, rawBody, appendText) → string` | Joins the parts with `\n\n`, filtering out empty ones. No video link is inserted — in this app the video is the post's `url`, not text in the body. |
 
 **Rule:** Keep this file free of platform-specific imports. If a function needs to grow a Devvit or browser dependency, move it out of `postUtils.ts` into the appropriate module instead.
@@ -243,25 +270,22 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 
 ---
 
-### `src/main.ts`
+### `src/server/index.ts` and `devvit.json`
 
-**Responsibilities:**
+**Responsibilities (split between the manifest and the Hono entry point):**
 
-- Registers `Devvit.configure` with `redditAPI`, `redis`, and the two HTTP domains
-- Declares all installation-scoped settings (see Settings section below)
-- Manages the Google API key: stored in Redis under `google_api_key` via the "Configure bot" form (not a Devvit setting, because Devvit settings are readable by mods via the settings UI)
-- Manages the Gemini model and thinking level in Redis (`gemini_model`, `gemini_thinking_level`) via "Configure bot"; `getGeminiChoice` reads them for every job
-- Registers the `check_new_episodes` scheduler job (the core pipeline)
-- Registers the `regenerate_discussion` scheduler job
-- Registers the `AppInstall`/`AppUpgrade` trigger (`ensureCheckerScheduled('reset')`: cancel every existing checker cron, schedule a fresh one) and a `PostSubmit`/`CommentSubmit` trigger (`ensureCheckerScheduled('heal')`); every mod menu press also heals. See "Scheduler jobs" for why.
-- Registers three subreddit mod menu items — "Configure bot" (API key, pin slot, and an Advanced group with model + thinking-level toggle; then a thinking-level form if toggled), "Check for new videos" (on a Playtest Install, opens a form with Testing Tools), and "Review pending post" (one form: edit, then Publish / Discard / Reject; Discard deletes the pending post and the video's `pending` record, Reject records the video as `rejected`) — and one post mod menu item, "Regenerate discussion" (prompt plus Advanced model/thinking overrides for that run)
-- Exports `default Devvit` (required by Devvit platform)
+- `devvit.json` declares the `server` entry, the `reddit`/`redis`/`http` permissions and the two HTTP domains, all installation-scoped settings (see Settings section below), all three scheduler task names with their endpoints, and the four triggers.
+- `src/server/index.ts` builds the Hono app, mounts `routes/check-episodes.ts`, `routes/pending-post.ts`, `routes/regenerate.ts` under `/internal/scheduler`, and `routes/triggers.ts` under `/internal/triggers`, then starts the server via `@devvit/web/server`'s `createServer`/`getServerPort`.
+- The Google API key is stored in Redis under `google_api_key` via the "Configure bot" form (not a Devvit setting, because Devvit settings are readable by mods via the settings UI) — this form is not yet implemented (see repository map note above).
+- The Gemini model and thinking level live in Redis (`gemini_model`, `gemini_thinking_level`), set via "Configure bot" (not yet implemented); `getGeminiChoice` in `routes/check-episodes.ts` reads them for every job.
+- `routes/triggers.ts` wires the `AppInstall`/`AppUpgrade` triggers (`ensureCheckerScheduled('reset')`: cancel every existing checker job, schedule a fresh one) and the `PostSubmit`/`CommentSubmit` triggers (`ensureCheckerScheduled('heal')`). See "Scheduler jobs" for why. Once mod menu items exist, every menu press should also heal.
+- The Hono app itself is the entry point Devvit Web's `server.entry` in `devvit.json` points at — there is no required default export (unlike the removed Blocks `export default Devvit` contract).
 
 ---
 
 ## Settings reference
 
-All settings use `SettingScope.Installation`. Each subreddit configures its own values through Mod Tools → Installed Apps.
+All settings are declared under `settings.subreddit` in `devvit.json` (Devvit Web's equivalent of the old `SettingScope.Installation`). Each subreddit configures its own values through Mod Tools → Installed Apps.
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
@@ -311,21 +335,21 @@ Keys no longer written (may linger on older installs, safe to delete): `last_epi
 | `post_pending_episode` | No fixed schedule | Triggered immediately by the "Review pending post" form's Publish action with job data `{ triggeredBy }`, so a failure PMs the mod who pressed it. Also scheduled at `now + autoApproveWindowMinutes` by `check_new_episodes` when `requireModApproval` is true and a window is configured. |
 | `regenerate_discussion` | No fixed schedule | Only triggered by the "Regenerate discussion" post menu forms via `runAt: new Date()`, with job data `{ videoId, commentId, systemPrompt, model, thinkingLevel, triggeredBy }`. |
 
-Blocks apps cannot declare a cron in `devvit.json` (`scheduler.tasks` requires a `server` entry point), so the checker cron is created at runtime by `ensureCheckerScheduled` in `src/checkerSchedule.ts`. On `AppInstall`/`AppUpgrade` it runs in `'reset'` mode: cancel every `check_new_episodes` cron and schedule a fresh one, so a job from an older version is replaced. Those events alone proved unreliable — a playtest install was found with no job, no stored job ID, and no trigger log across six version changes — so `'heal'` mode also runs on every mod menu press and on `PostSubmit`/`CommentSubmit`. Heal is throttled to once per 30 minutes via `episode_checker_verified_at`, schedules the job only if `listJobs()` has none, and cancels duplicates left by concurrent heals. It never throws.
+All three job names are declared under `scheduler.tasks` in `devvit.json`, each with its own endpoint (Devvit Web requires every scheduler job — including one-offs — to be declared). `check_new_episodes` is declared **without** a `cron` field: it is still created and kept alive at runtime by `ensureCheckerScheduled` in `src/server/checkerSchedule.ts`, tagged as a `USER`-managed job (not a `DEVVIT_JSON`-managed one), so Devvit never auto-cancels or reschedules it out from under the app. On `AppInstall`/`AppUpgrade` it runs in `'reset'` mode: cancel every `check_new_episodes` job and schedule a fresh one, so a job from an older version is replaced. Those events alone proved unreliable — a playtest install was found with no job, no stored job ID, and no trigger log across six version changes — so `'heal'` mode also runs on `PostSubmit`/`CommentSubmit` (and should run on every mod menu press, once menu items exist). Heal is throttled to once per 30 minutes via `episode_checker_verified_at`, schedules the job only if `listJobs([ScheduledActionManager.USER])` has none, and cancels duplicates left by concurrent heals. It never throws.
 
 ---
 
 ## Devvit platform constraints to keep in mind
 
-1. **HTTP domains must be pre-declared.** `youtube.googleapis.com` and `generativelanguage.googleapis.com` are registered in both `devvit.json` and `Devvit.configure`. Adding a new external API requires adding it to both locations.
+1. **HTTP domains must be pre-declared.** `youtube.googleapis.com` and `generativelanguage.googleapis.com` are registered in `devvit.json`'s `permissions.http.domains`. Adding a new external API requires adding it there.
 
-2. **No colons in URL paths via the HTTP proxy.** The Gemini native endpoint (`/v1beta/models/{model}:generateContent`) contains a colon that the Devvit proxy misroutes. Always use the OpenAI-compatible endpoint at `/v1beta/openai/chat/completions`.
+2. **No colons in URL paths via the HTTP proxy (unverified under Devvit Web).** The Gemini native endpoint (`/v1beta/models/{model}:generateContent`) contains a colon that misrouted through the Blocks-era HTTP proxy. The OpenAI-compatible endpoint at `/v1beta/openai/chat/completions` avoids it; this migration carries the constraint forward without reconfirming it, and the client is not simplified based on an assumption that it no longer applies.
 
 3. **`context.subredditName` is the source of truth for the subreddit name.** There is no `subredditName` setting. Do not add one.
 
-4. **Scheduler jobs run in the Devvit cloud, not in the user's browser.** `context.ui` (toasts, forms) is not available inside scheduler job `onRun` handlers. Only mod menu `onPress` handlers can call `context.ui.*`.
+4. **UI-response effects (toasts, forms) are only available from menu-item and form-submit endpoints.** Scheduler task endpoints and trigger endpoints have no UI-effect capability at all — there is no Devvit Web equivalent of calling `context.ui.*` from a scheduled job.
 
-5. **`SettingScope.Installation` is required** for all per-subreddit settings. `SettingScope.App` is for developer-owned secrets shared across all installs — deliberately not used here.
+5. **Settings declared under `settings.subreddit` in `devvit.json`** are per-subreddit. There is no app-global settings block in use here — deliberately not used for this app's mod-supplied values.
 
 6. **Link posts (`url`) and self-post bodies (`text`/`richtext`) are mutually exclusive on Reddit** — this is a platform-level constraint in Reddit's data model, not a Devvit limitation, and it isn't fixable from the app. Confirmed dead ends, do not re-attempt: a richtext `embed` node pointing at the video is silently stripped by Reddit (the post comes back with an empty body); a bare video URL on its own line in self-post markdown text does not get Reddit's auto-embed preview card, it just renders as a plain link. The only way to get both the native video thumbnail/preview card and the full discussion text is what this app does — submit a genuine link post (`url` = video) and post the discussion body separately as a distinguished, stickied top-level comment (see `createEpisodePost` in `postManager.ts`).
 
@@ -337,9 +361,9 @@ All log lines are prefixed with a bracketed module tag so they're filterable in 
 
 | Prefix | Source |
 |---|---|
-| `[bot]` | `main.ts` scheduler job handlers |
-| `[llmClient]` | `llmClient.ts` |
-| `[postManager]` | `postManager.ts` |
+| `[bot]` | `src/server/routes/check-episodes.ts` and `src/server/checkerSchedule.ts` |
+| `[llmClient]` | `src/server/llmClient.ts` |
+| `[postManager]` | `src/server/postManager.ts` |
 
 Errors use `console.error`; informational output uses `console.log`; warnings use `console.warn`. Error paths inside `catch` blocks log the error and either return (non-fatal) or rethrow (fatal — e.g., pin failure in `managePins`).
 
@@ -351,29 +375,29 @@ Errors use `console.error`; informational output uses `console.log`; warnings us
 
 ### Add a new installation setting
 
-1. Add the setting definition to `Devvit.addSettings([...])` in `src/main.ts`.
-2. Read it in the `check_new_episodes` `onRun` handler alongside the other settings reads.
+1. Add the setting definition under `settings.subreddit` in `devvit.json`.
+2. Read it in `check_new_episodes`'s route handler (`src/server/routes/check-episodes.ts`) alongside the other settings reads.
 3. Pass it as a parameter to the relevant module function.
 4. Update the Settings reference table in this file and in `README.md`.
 
 ### Change the Gemini model or request parameters
 
-Edit `generateEpisodePost` in `src/llmClient.ts`. The `model`, `max_tokens`, and `reasoning_effort` fields are in the JSON body. Model and thinking level come from Redis via `getGeminiChoice` in `src/main.ts`, so mods change them in "Configure bot" without a code deploy. To refresh the models on offer, run `npm run models:sync` and commit `src/geminiModels.generated.ts`. Keep `GEMINI_DEADLINE_MS` comfortably under Devvit's 30 s HTTP limit.
+Edit `generateEpisodePost` in `src/server/llmClient.ts`. The `model`, `max_tokens`, and `reasoning_effort` fields are in the JSON body. Model and thinking level come from Redis via `getGeminiChoice` in `src/server/routes/check-episodes.ts`, so mods change them in "Configure bot" without a code deploy. To refresh the models on offer, run `npm run models:sync` and commit `src/geminiModels.generated.ts`. Keep `GEMINI_DEADLINE_MS` comfortably under Devvit's 30 s HTTP limit.
 
 ### Change the post body assembly order
 
-The body is assembled by `assemblePostBody` in `src/postUtils.ts`. It becomes the discussion comment, not the post text — the post itself only ever gets `title` and `url` (see `createEpisodePost`). Both `check_new_episodes` and `regenerate_latest_post` in `src/main.ts` call `assemblePostBody`, as does the preview web app. Edit the function there and the change applies everywhere.
+The body is assembled by `assemblePostBody` in `src/postUtils.ts`. It becomes the discussion comment, not the post text — the post itself only ever gets `title` and `url` (see `createEpisodePost`). Both `check_new_episodes` and the regenerate route call `assemblePostBody`, as does the preview web app. Edit the function there and the change applies everywhere.
 
 ### Add a new mod menu item
 
-Use `Devvit.addMenuItem` in `src/main.ts`. For actions that take time, schedule a one-off job with `runAt: new Date()` and show a confirmation toast — do not run long operations directly inside `onPress`.
+Add an entry under `menu.items` in `devvit.json` pointing at a new `/internal/menu/...` endpoint, and implement that endpoint in a Hono route under `src/server/routes/`. For actions that take time, schedule a one-off job with `runAt: new Date()` and return a toast `UiResponse` immediately — do not run long operations directly inside the menu endpoint handler.
 
 - Keep `description` to a short phrase: Reddit renders every description in the subreddit's "…" menu (where subreddit menu items appear, next to the Mod Tools button), so long ones make the menu grow. When pointing mods at a menu item in a message, say "the subreddit's "…" menu", not "Mod Tools".
 - Mods cannot read app logs. Never tell them to "check logs". Toasts say what they'll see (e.g. "The post appears within 30 seconds; otherwise you'll get a message"), and the job must make that true: PM the triggering mod on failure, and on any outcome that would otherwise be invisible.
 
 ### Change the pin rotation behavior
 
-`managePins` in `src/postManager.ts` reads `last_episode_sticky_slot` from Redis (default `1`), calls `sticky(slot)` on the new post, and writes the slot back to Redis. Reddit's `sticky()` atomically displaces the existing occupant of that slot — no explicit `unsticky()` is needed. To change which slot is used at runtime, mods can use the "Set pin slot" mod menu item, which writes directly to `last_episode_sticky_slot`.
+`managePins` in `src/server/postManager.ts` reads `last_episode_sticky_slot` from Redis (default `1`), calls `sticky(slot)` on the new post, and writes the slot back to Redis. Reddit's `sticky()` atomically displaces the existing occupant of that slot — no explicit `unsticky()` is needed. To change which slot is used at runtime, mods can use the "Set pin slot" mod menu item, which writes directly to `last_episode_sticky_slot`.
 
 ### Support multiple playlists
 
@@ -384,11 +408,11 @@ Currently one playlist ID per subreddit installation. To fan out, the `check_new
 ## TypeScript and build notes
 
 - Module system: `"type": "module"` in `package.json`. All imports use `.js` extensions (even for `.ts` source files) per Node ESM + TypeScript bundler conventions.
-- `tsconfig.json` uses `"moduleResolution": "Bundler"` (Devvit requirement).
-- Compiled `.js` files are **not committed** (`src/*.js` is gitignored). Devvit compiles TypeScript during `devvit upload`. Run `npm run type-check` to verify types locally before deploying.
-- `npm run type-check` (`tsc --build`) **does emit** `.js` next to each source. Bundlers resolve `./x.js` imports to those files when they exist, so a stale `src/geminiModels.generated.js` would win over a freshly synced `.ts`. `predeploy` therefore runs `models:sync` and then `type-check`; re-run `type-check` after a manual sync too.
+- `tsconfig.json` uses `"moduleResolution": "Bundler"` (Devvit Web requirement) and `"composite": true`, matching the official `devvit-template-mod-tool-devvit-web` template.
+- The server bundle (`dist/server/index.cjs`) is a single self-contained CommonJS file produced by `vite build` via the `@devvit/start` plugin — see `docs/adr/0003-hono-vite-server-layout.md`. Nothing under `dist/` is committed.
+- Run `npm run type-check` (`tsc --build`, no emit beyond `dist/types/` build info) to verify types locally before deploying. Run `npm test` (`vitest run`) to run the unit test suite.
 - The `devDependencies` include `dotenv-cli` to inject a `.env` file during `devvit playtest` (the `dev` script). Create a `.env` file if needed for local playtest overrides — it is gitignored.
-- **Devvit releases frequently.** Before starting work, check for a newer version of `@devvit/public-api` and `devvit` by running `npm outdated @devvit/public-api devvit`. If a newer version is available, update both packages (`npm install @devvit/public-api@latest devvit@latest`) and run `npm run type-check` to catch any breaking changes before making other modifications.
+- **Devvit releases frequently.** Before starting work, check for a newer version of `@devvit/web`, `@devvit/start`, and `devvit` by running `npm outdated @devvit/web @devvit/start devvit`. If a newer version is available, update the packages and run `npm run type-check` to catch any breaking changes before making other modifications.
 
 ---
 
@@ -397,9 +421,11 @@ Currently one playlist ID per subreddit installation. To fan out, the `check_new
 | Command | Effect |
 |---|---|
 | `npm run dev` | `devvit playtest` — installs to test subreddit, streams live logs |
+| `npm run build` | `vite build` — builds the production server bundle to `dist/server/` |
+| `npm test` | `vitest run` — runs the unit test suite |
 | `npm run deploy` | `devvit upload` — uploads to App Directory (not yet published) |
 | `npm run launch` | `devvit publish` — publishes the app publicly |
-| `npm run type-check` | TypeScript type check (also emits `.js` next to sources; see build notes) |
+| `npm run type-check` | TypeScript type check (also emits build info under `dist/types/`; see build notes) |
 | `npm run models:sync` | Refresh `src/geminiModels.generated.ts` from the Gemini API (needs `GEMINI_API_KEY` in `.env`); runs automatically before `deploy` |
 
 ---
@@ -424,11 +450,11 @@ A React + Vite SPA that lets mods preview what Gemini will generate before deplo
 
 ## What not to change without careful review
 
-- **The Gemini HTTP endpoint URL** in `llmClient.ts` — the OpenAI-compatible path is required by the Devvit HTTP proxy.
+- **The Gemini HTTP endpoint URL** in `src/server/llmClient.ts` — the OpenAI-compatible path is required by the Devvit HTTP proxy (unverified but unchanged under Devvit Web — see platform constraint #2 above).
 - **The `*/30 * * * *` cron expression** — Devvit enforces a minimum polling interval for scheduled jobs; going below 30 minutes may be rejected.
 - **`ensureCheckerScheduled` and its callers** — the install/upgrade `'reset'` plus the activity/menu `'heal'` are what keep the cron alive; removing either leaves installs silently never checking for videos.
 - **The Redis key names** — changing them invalidates deduplication state for all existing installs mid-operation.
-- **`export default Devvit`** in `main.ts` — required by the Devvit runtime entry point contract.
+- **The Hono app in `src/server/index.ts` as the `server.entry` target** — `devvit.json`'s `server.entry`/`server.dir` must keep pointing at the compiled `dist/server/index.cjs`; there is no required default export (the old Blocks `export default Devvit` contract is gone).
 - **The signatures of exported functions in `src/postUtils.ts`** — both the Devvit app and the preview web app call these functions. A signature change must be applied to both call sites simultaneously.
 - **The link post + stickied discussion comment pattern** in `createEpisodePost` — don't revert to a self post with an embedded video link. Reddit's post model cannot carry both a `url` (needed for the thumbnail/preview card) and a `text` body at the same time; see platform constraint #6 above.
 

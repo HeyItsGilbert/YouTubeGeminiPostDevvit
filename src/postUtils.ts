@@ -70,7 +70,7 @@ export function parseGeneratedResponse(fullText: string, fallbackTitle: string):
     return { title: fallbackTitle, body: fullText.trim() };
   }
 
-  const title = lines[titleLineIndex].trim();
+  const title = (lines[titleLineIndex] ?? '').trim();
   const body = lines.slice(titleLineIndex + 1).join('\n').trim();
 
   return { title, body };

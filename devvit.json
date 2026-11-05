@@ -1,8 +1,96 @@
 {
   "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
   "name": "youtube-gemini",
-  "blocks": {
-    "entry": "src/main.ts"
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.cjs"
+  },
+  "triggers": {
+    "onAppInstall": "/internal/triggers/on-app-install",
+    "onAppUpgrade": "/internal/triggers/on-app-upgrade",
+    "onPostSubmit": "/internal/triggers/on-post-submit",
+    "onCommentSubmit": "/internal/triggers/on-comment-submit"
+  },
+  "scheduler": {
+    "tasks": {
+      "check_new_episodes": {
+        "endpoint": "/internal/scheduler/check-new-episodes"
+      },
+      "post_pending_episode": {
+        "endpoint": "/internal/scheduler/post-pending-episode"
+      },
+      "regenerate_discussion": {
+        "endpoint": "/internal/scheduler/regenerate-discussion"
+      }
+    }
+  },
+  "settings": {
+    "subreddit": {
+      "youtubePlaylistId": {
+        "type": "string",
+        "label": "YouTube Playlist ID",
+        "helpText": "Playlist to monitor for new videos. You can use a regular playlist ID (e.g. PLabc123) or a channel ID (e.g. UCabc123) — the app will automatically use that channel's Uploads playlist, which is always sorted newest-first."
+      },
+      "excludeTitleKeywords": {
+        "type": "string",
+        "label": "Exclude Title Keywords (optional)",
+        "helpText": "Comma-separated list of keywords. Videos whose titles contain any of these words are permanently skipped (e.g. \"trailer, short, bonus\").",
+        "defaultValue": ""
+      },
+      "systemPrompt": {
+        "type": "paragraph",
+        "label": "System Prompt",
+        "helpText": "Instructions for Gemini. First line of output is used as the post title. The user message will include: Title, Published date, Link, and Description. See SystemPrompt.example.md for a sample."
+      },
+      "botFlairEmoji": {
+        "type": "string",
+        "label": "Bot Flair Emoji (optional)",
+        "helpText": "Emoji shown in the bot's author flair on this subreddit, e.g. 🎙️",
+        "defaultValue": ""
+      },
+      "botFlairText": {
+        "type": "string",
+        "label": "Bot Flair Text (optional)",
+        "helpText": "Display name shown in the bot's author flair on this subreddit, e.g. \"Podcast Bot\". Combined with the emoji if both are set.",
+        "defaultValue": ""
+      },
+      "prependText": {
+        "type": "paragraph",
+        "label": "Prepend Text (optional)",
+        "helpText": "Text added to the top of every generated post body. Useful for recurring links or disclaimers.",
+        "defaultValue": ""
+      },
+      "appendText": {
+        "type": "paragraph",
+        "label": "Append Text (optional)",
+        "helpText": "Text added to the bottom of every generated post body. Useful for footers or recurring links.",
+        "defaultValue": ""
+      },
+      "flairName": {
+        "type": "string",
+        "label": "Post Flair (optional)",
+        "helpText": "Exact name of a post flair template on this subreddit. Leave blank for no flair.",
+        "defaultValue": ""
+      },
+      "notificationMods": {
+        "type": "string",
+        "label": "Notification Recipients (optional)",
+        "helpText": "Comma-separated Reddit usernames to notify when a post is queued for approval (e.g. \"alice, bob\"). Leave blank to send to the general mod inbox instead.",
+        "defaultValue": ""
+      },
+      "requireModApproval": {
+        "type": "boolean",
+        "label": "Hold posts for mod approval",
+        "helpText": "When enabled, generated posts are queued in the mod inbox for review instead of being submitted immediately. Use \"Review pending post\" in the subreddit's \"…\" menu to publish, discard, or reject.",
+        "defaultValue": false
+      },
+      "autoApproveWindowMinutes": {
+        "type": "number",
+        "label": "Auto-approve window (minutes, 0 = off)",
+        "helpText": "Only applies when \"Hold posts for mod approval\" is on. The post auto-publishes after this many minutes if no mod takes action. Set to 0 to require explicit mod approval with no timeout.",
+        "defaultValue": 0
+      }
+    }
   },
   "permissions": {
     "reddit": {
@@ -16,6 +104,10 @@
         "generativelanguage.googleapis.com"
       ]
     }
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch"
   },
   "marketingAssets": {
     "icon": "assets/icon.png"

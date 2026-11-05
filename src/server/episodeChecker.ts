@@ -1,5 +1,5 @@
-import { type EpisodeData } from './types.js';
-import { resolvePlaylistId } from './postUtils.js';
+import { type EpisodeData } from '../types.js';
+import { resolvePlaylistId } from '../postUtils.js';
 
 const YT_API_BASE = 'https://youtube.googleapis.com/youtube/v3';
 
@@ -78,7 +78,6 @@ export async function fetchPlaylistVideos(
         description: snippet.description ?? '',
         pubDate: snippet.publishedAt,
         link: `https://www.youtube.com/watch?v=${videoId}`,
-        episodeNumber: undefined,
       };
     });
 }
@@ -121,7 +120,5 @@ export async function fetchYouTubeVideoById(
     description: snippet.description ?? '',
     pubDate: snippet.publishedAt,
     link: `https://www.youtube.com/watch?v=${videoId}`,
-    episodeNumber: undefined,
   };
 }
-
