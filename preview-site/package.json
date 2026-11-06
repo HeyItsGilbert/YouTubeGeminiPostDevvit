@@ -11,7 +11,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@google/genai": "^2.24.0",
+    "@google/genai": "^2.25.0",
     "lucide-react": "^1.48.0",
     "motion": "^13.4.4",
     "react": "^19.3.0",
