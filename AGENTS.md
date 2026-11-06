@@ -38,6 +38,9 @@ src/
     checkerSchedule.ts ensureCheckerScheduled: keeps exactly one check_new_episodes
                     runtime job alive ('reset' on install/upgrade, throttled 'heal'
                     elsewhere).
+    configureBot.ts   Pure field/decision builders for "Configure bot": form
+                    assembly, submission decisions, and the Redis keys it shares
+                    with check-episodes.ts. Devvit-SDK-free — the testable seam.
     episodeChecker.ts YouTube Data API v3 client. Fetches playlists and individual
                     videos.
     llmClient.ts    Gemini API client (via OpenAI-compatible endpoint). Delegates
@@ -51,7 +54,9 @@ src/
                     overwritten (except by a forced repost) or deleted.
     routes/
       check-episodes.ts  `check_new_episodes` scheduler task: the full recurring
-                    video-check pipeline (the only feature route fully wired up so far).
+                    video-check pipeline.
+      configure-bot.ts    "Configure bot" subreddit menu item and its two-step
+                    form chain (API key/pin slot/model, then thinking level).
       pending-post.ts    `post_pending_episode` scheduler task — declared, stub only;
                     full publish/discard/reject logic lands with "Review pending post".
       regenerate.ts      `regenerate_discussion` scheduler task — declared, stub only;
@@ -78,8 +83,8 @@ preview-site/
                     and src/types.ts via the @shared path alias.
 ```
 
-**Note on current build status:** Only the `check_new_episodes` pipeline (the recurring
-video-check job) is wired up on Devvit Web so far. "Configure bot", "Check for new
+**Note on current build status:** The `check_new_episodes` pipeline (the recurring
+video-check job) and "Configure bot" are wired up on Devvit Web. "Check for new
 videos", "Review pending post", and "Regenerate discussion" (menu items, forms, and
 the `post_pending_episode`/`regenerate_discussion` job logic) still only exist in the
 sections below as the target design — they land in later tickets on the same
@@ -274,11 +279,11 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 
 **Responsibilities (split between the manifest and the Hono entry point):**
 
-- `devvit.json` declares the `server` entry, the `reddit`/`redis`/`http` permissions and the two HTTP domains, all installation-scoped settings (see Settings section below), all three scheduler task names with their endpoints, and the four triggers.
-- `src/server/index.ts` builds the Hono app, mounts `routes/check-episodes.ts`, `routes/pending-post.ts`, `routes/regenerate.ts` under `/internal/scheduler`, and `routes/triggers.ts` under `/internal/triggers`, then starts the server via `@devvit/web/server`'s `createServer`/`getServerPort`.
-- The Google API key is stored in Redis under `google_api_key` via the "Configure bot" form (not a Devvit setting, because Devvit settings are readable by mods via the settings UI) — this form is not yet implemented (see repository map note above).
-- The Gemini model and thinking level live in Redis (`gemini_model`, `gemini_thinking_level`), set via "Configure bot" (not yet implemented); `getGeminiChoice` in `routes/check-episodes.ts` reads them for every job.
-- `routes/triggers.ts` wires the `AppInstall`/`AppUpgrade` triggers (`ensureCheckerScheduled('reset')`: cancel every existing checker job, schedule a fresh one) and the `PostSubmit`/`CommentSubmit` triggers (`ensureCheckerScheduled('heal')`). See "Scheduler jobs" for why. Once mod menu items exist, every menu press should also heal.
+- `devvit.json` declares the `server` entry, the `reddit`/`redis`/`http` permissions and the two HTTP domains, all installation-scoped settings (see Settings section below), the "Configure bot" menu item and its two forms, all three scheduler task names with their endpoints, and the four triggers.
+- `src/server/index.ts` builds the Hono app, mounts `routes/check-episodes.ts`, `routes/pending-post.ts`, `routes/regenerate.ts` under `/internal/scheduler`, `routes/triggers.ts` under `/internal/triggers`, and `routes/configure-bot.ts` under `/internal/menu` and `/internal/form`, then starts the server via `@devvit/web/server`'s `createServer`/`getServerPort`.
+- The Google API key is stored in Redis under `google_api_key` via the "Configure bot" form (not a Devvit setting, because Devvit settings are readable by mods via the settings UI).
+- The Gemini model and thinking level live in Redis (`gemini_model`, `gemini_thinking_level`), set via "Configure bot"; `getGeminiChoice` in `src/server/configureBot.ts` reads them for every job (`routes/check-episodes.ts` and `routes/configure-bot.ts` both call it).
+- `routes/triggers.ts` wires the `AppInstall`/`AppUpgrade` triggers (`ensureCheckerScheduled('reset')`: cancel every existing checker job, schedule a fresh one) and the `PostSubmit`/`CommentSubmit` triggers (`ensureCheckerScheduled('heal')`). See "Scheduler jobs" for why. "Configure bot" also heals on every press; the same should apply once the remaining mod menu items exist.
 - The Hono app itself is the entry point Devvit Web's `server.entry` in `devvit.json` points at — there is no required default export (unlike the removed Blocks `export default Devvit` contract).
 
 ---
@@ -315,6 +320,7 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | `gemini_model` | string | "Configure bot" form (deleted when "Recommended" is chosen) | `getGeminiChoice` (all Gemini jobs, both forms) | Advanced model override. Absent = `DEFAULT_GEMINI_MODEL`. |
 | `gemini_thinking_level` | string (`ThinkingLevel`) | "Configure bot" thinking-level form; deleted when the toggle is off or the model changes | `getGeminiChoice` | Advanced thinking override. Absent, or not accepted by the model = no `reasoning_effort`. |
 | `regenerate_draft:<userId>` | string (JSON `RegenerateJobData`), 1 h expiry | "Regenerate discussion" step 1 | "Regenerate discussion" step 2 (then deleted) | Carries step 1's answers to the thinking-level step. |
+| `configure_bot_draft:<userId>` | string (JSON `{ model }`), 10 min expiry | "Configure bot" step 1 (only when opening the thinking-level step) | "Configure bot" step 2 (then deleted) | Carries the model step 1 just resolved into step 2 — a form submit endpoint only receives its own fields. |
 | `episode_checker_job_id` | string | `ensureCheckerScheduled` | — | ID of the current checker cron job, for debugging. The scheduler's `listJobs()` is the source of truth. |
 | `episode_checker_verified_at` | string (epoch ms) | `ensureCheckerScheduled` | `ensureCheckerScheduled` | When the checker job was last verified; throttles 'heal' to once per 30 minutes. |
 | `check_triggered_by` | string | "Check for new videos" menu item / playtest form | `check_new_episodes` (manual-run outcome PMs and error handler), `post_pending_episode` error handler (when no `triggeredBy` job data) | Username of the mod who manually triggered; used to PM outcomes and failures |
@@ -382,7 +388,7 @@ Errors use `console.error`; informational output uses `console.log`; warnings us
 
 ### Change the Gemini model or request parameters
 
-Edit `generateEpisodePost` in `src/server/llmClient.ts`. The `model`, `max_tokens`, and `reasoning_effort` fields are in the JSON body. Model and thinking level come from Redis via `getGeminiChoice` in `src/server/routes/check-episodes.ts`, so mods change them in "Configure bot" without a code deploy. To refresh the models on offer, run `npm run models:sync` and commit `src/geminiModels.generated.ts`. Keep `GEMINI_DEADLINE_MS` comfortably under Devvit's 30 s HTTP limit.
+Edit `generateEpisodePost` in `src/server/llmClient.ts`. The `model`, `max_tokens`, and `reasoning_effort` fields are in the JSON body. Model and thinking level come from Redis via `getGeminiChoice` in `src/server/configureBot.ts`, so mods change them in "Configure bot" without a code deploy. To refresh the models on offer, run `npm run models:sync` and commit `src/geminiModels.generated.ts`. Keep `GEMINI_DEADLINE_MS` comfortably under Devvit's 30 s HTTP limit.
 
 ### Change the post body assembly order
 
@@ -397,7 +403,7 @@ Add an entry under `menu.items` in `devvit.json` pointing at a new `/internal/me
 
 ### Change the pin rotation behavior
 
-`managePins` in `src/server/postManager.ts` reads `last_episode_sticky_slot` from Redis (default `1`), calls `sticky(slot)` on the new post, and writes the slot back to Redis. Reddit's `sticky()` atomically displaces the existing occupant of that slot — no explicit `unsticky()` is needed. To change which slot is used at runtime, mods can use the "Set pin slot" mod menu item, which writes directly to `last_episode_sticky_slot`.
+`managePins` in `src/server/postManager.ts` reads `last_episode_sticky_slot` from Redis (default `1`), calls `sticky(slot)` on the new post, and writes the slot back to Redis. Reddit's `sticky()` atomically displaces the existing occupant of that slot — no explicit `unsticky()` is needed. To change which slot is used at runtime, mods use the "Configure bot" mod menu item, which writes directly to `last_episode_sticky_slot`.
 
 ### Support multiple playlists
 
