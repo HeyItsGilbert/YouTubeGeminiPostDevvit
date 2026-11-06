@@ -6,25 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-06
+
+### Added
+
+- The Devvit Web version now includes the moderator-only **Check for new
+  videos** menu item. On playtest installs it also exposes the force-repost
+  testing tool; all manual checks schedule the existing checker job and PM
+  the triggering moderator on outcomes that would otherwise be invisible.
+
 ### Changed
 
-- Upgraded Devvit to 0.15.2.
-- Migrated the app's entry point from Devvit Blocks to Devvit Web: `devvit.json`
-  now declares a `server` entry (Hono, bundled by Vite via `@devvit/start`)
-  instead of `blocks`. The recurring video-check pipeline
-  (`check_new_episodes`), "Configure bot" (API key, pin slot, and the
-  Advanced Gemini model/thinking-level overrides), and the mod-approval
-  gate's **Review pending post** menu item/form (publish, discard, reject,
-  and auto-approve via `post_pending_episode`) are fully ported and run
-  exactly as before; "Check for new videos" and "Regenerate discussion"
-  are not yet re-implemented on the new server (tracked in follow-up
-  tickets). Settings, Redis keys, and the video registry are unchanged.
-- Vitest is now the project's test runner (`npm test`), with unit tests for
-  the checker-scheduling reset/heal logic, the video registry's
-  terminal-`posted` guard, the "Configure bot" form/decision builders, the
-  shared pure utility functions, the Pending Post helpers
-  (get/clear/cancel-auto-approve, review-action parsing, the review form
-  builder), and the shared failure-notification helper.
+- Migrated from Devvit Blocks to Devvit Web: Hono is bundled by Vite via
+  `@devvit/start`, and `devvit.json` declares the server, settings, menus,
+  forms, scheduler tasks, and triggers. Moderator-facing behavior, setting
+  keys, Redis state, the video registry, and the link-post-plus-stickied-
+  comment pattern are unchanged.
+- Ported **Configure bot**, **Review pending post**, and **Regenerate
+  discussion** to Devvit Web, including their form chains, model/thinking
+  overrides, approval workflow, and 10-minute form-expiry warnings.
+- Added Vitest coverage for scheduling, registry invariants, pure utilities,
+  configuration, pending-post, regeneration, notifications, and manual
+  check behavior.
 
 ## [0.3.0] - 2026-10-14
 
