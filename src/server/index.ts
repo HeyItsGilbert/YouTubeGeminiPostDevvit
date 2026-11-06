@@ -6,6 +6,8 @@ import { configureBot } from './routes/configure-bot.js';
 import { pendingPost } from './routes/pending-post.js';
 import { regenerate } from './routes/regenerate.js';
 import { triggers } from './routes/triggers.js';
+import { menu } from './routes/menu.js';
+import { forms } from './routes/forms.js';
 
 const app = new Hono();
 const internal = new Hono();
@@ -15,6 +17,8 @@ internal.route('/scheduler', pendingPost);
 internal.route('/scheduler', regenerate);
 internal.route('/triggers', triggers);
 internal.route('/', configureBot);
+internal.route('/menu', menu);
+internal.route('/form', forms);
 
 app.route('/internal', internal);
 

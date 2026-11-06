@@ -9,7 +9,6 @@
 import { Hono } from 'hono';
 import type { TaskRequest, TaskResponse } from '@devvit/web/server';
 import { context, reddit, redis, scheduler, settings } from '@devvit/web/server';
-import type { RedditClient } from '@devvit/reddit';
 
 import { fetchPlaylistVideos } from '../episodeChecker.js';
 import { generateEpisodePost } from '../llmClient.js';
@@ -17,55 +16,10 @@ import { createEpisodePost, applyBotFlair, applyFlair, managePins } from '../pos
 import { getAllVideoRecords, setVideoRecord } from '../videoRegistry.js';
 import { assemblePostBody, applyPlaceholders, matchesExclusionFilter, isPrivateVideo } from '../../postUtils.js';
 import { REDIS_KEY_GOOGLE_API_KEY, getGeminiChoice } from '../configureBot.js';
+import { REDIS_KEY_PENDING_POST, REDIS_KEY_PENDING_POST_JOB_ID, type PendingPost } from '../pendingPost.js';
+import { sendFailureNotification, FAILURE_HELP } from '../notifications.js';
 
 export const checkEpisodes = new Hono();
-
-// ---------------------------------------------------------------------------
-// Redis key constants
-// ---------------------------------------------------------------------------
-
-const REDIS_KEY_PENDING_POST = 'pending_post';
-const REDIS_KEY_PENDING_POST_JOB_ID = 'pending_post_job_id';
-
-interface PendingPost {
-  title: string;
-  body: string;
-  url: string;
-  videoId: string;
-  videoTitle: string;
-  generatedAt: string;
-}
-
-/** Closing line of failure PMs: things a mod can act on (they can't read app logs). */
-const FAILURE_HELP = 'Please try again later. If it keeps failing, check the Google API key in "Configure bot" (in the subreddit\'s "…" menu) and the app settings in Mod Tools → Installed Apps, or report it at https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/issues.';
-
-/**
- * Send a PM (usually a failure report) to the appropriate recipients.
- *
- * Priority: if notificationMods are configured, PM each of them.
- * Otherwise fall back to the individual mod who triggered the action
- * (fallbackRecipient). If neither is available, only log — never throws.
- */
-async function sendFailureNotification(
-  reddit: RedditClient,
-  notificationMods: string[],
-  fallbackRecipient: string | null | undefined,
-  subject: string,
-  text: string,
-): Promise<void> {
-  const recipients = notificationMods.length > 0
-    ? notificationMods
-    : (fallbackRecipient ? [fallbackRecipient] : []);
-
-  for (const recipient of recipients) {
-    try {
-      await reddit.sendPrivateMessage({ to: recipient, subject, text });
-      console.log(`[bot] Sent failure notification PM to u/${recipient}`);
-    } catch (pmErr) {
-      console.error(`[bot] Failed to send failure notification to u/${recipient}: ${pmErr}`);
-    }
-  }
-}
 
 checkEpisodes.post('/check-new-episodes', async (c) => {
   const event = await c.req.json<TaskRequest<{ manual?: boolean; forceRepost?: boolean }>>();

@@ -52,13 +52,28 @@ src/
                     Stores status (posted/pending/excluded/rejected/skipped/private) and
                     postId/commentId per video ID. Posted records are terminal: never
                     overwritten (except by a forced repost) or deleted.
+    pendingPost.ts  Pending Post helpers shared by check-episodes.ts, the
+                    post_pending_episode job, and the "Review pending post" menu +
+                    form routes: PendingPost type, Redis key constants, get/clear/
+                    cancel-auto-approve helpers, review-action parsing, and the
+                    review form builder.
+    notifications.ts sendFailureNotification + FAILURE_HELP: PMs notificationMods
+                    (or the triggering mod as fallback) on a failure. Shared by
+                    check-episodes.ts and the post_pending_episode job.
     routes/
       check-episodes.ts  `check_new_episodes` scheduler task: the full recurring
                     video-check pipeline.
       configure-bot.ts    "Configure bot" subreddit menu item and its two-step
                     form chain (API key/pin slot/model, then thinking level).
-      pending-post.ts    `post_pending_episode` scheduler task — declared, stub only;
-                    full publish/discard/reject logic lands with "Review pending post".
+      pending-post.ts    `post_pending_episode` scheduler task: publishes a
+                    mod-approved or auto-approved Pending Post through the same
+                    link-post-plus-comment, flair, and pin path as a direct post.
+      menu.ts       Subreddit "…" menu items. "Review pending post" opens the
+                    review form (or toasts if nothing is pending); re-verifies the
+                    checker cron on every press.
+      forms.ts      Form submit handlers. "Review pending post" resolves Publish
+                    (writes edits back, triggers post_pending_episode now with
+                    job data `{ triggeredBy }`), Discard, or Reject.
       regenerate.ts      `regenerate_discussion` scheduler task — declared, stub only;
                     full logic lands with "Regenerate discussion".
       triggers.ts   onAppInstall/onAppUpgrade/onPostSubmit/onCommentSubmit — all four
@@ -84,12 +99,13 @@ preview-site/
 ```
 
 **Note on current build status:** The `check_new_episodes` pipeline (the recurring
-video-check job) and "Configure bot" are wired up on Devvit Web. "Check for new
-videos", "Review pending post", and "Regenerate discussion" (menu items, forms, and
-the `post_pending_episode`/`regenerate_discussion` job logic) still only exist in the
-sections below as the target design — they land in later tickets on the same
-migration. Their scheduler tasks are declared in `devvit.json` with stub route
-handlers so Devvit Web's "every job must be declared" requirement is met.
+video-check job), "Configure bot", and "Review pending post" (menu item, form, and
+the `post_pending_episode` job) are wired up on Devvit Web. "Check for new videos"
+and "Regenerate discussion" (menu items, forms, and the `regenerate_discussion` job
+logic) still only exist in the sections below as the target design — they land in
+later tickets on the same migration. `regenerate_discussion`'s scheduler task is
+declared in `devvit.json` with a stub route handler so Devvit Web's "every job
+must be declared" requirement is met.
 
 ---
 
@@ -279,11 +295,11 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 
 **Responsibilities (split between the manifest and the Hono entry point):**
 
-- `devvit.json` declares the `server` entry, the `reddit`/`redis`/`http` permissions and the two HTTP domains, all installation-scoped settings (see Settings section below), the "Configure bot" menu item and its two forms, all three scheduler task names with their endpoints, and the four triggers.
-- `src/server/index.ts` builds the Hono app, mounts `routes/check-episodes.ts`, `routes/pending-post.ts`, `routes/regenerate.ts` under `/internal/scheduler`, `routes/triggers.ts` under `/internal/triggers`, and `routes/configure-bot.ts` under `/internal/menu` and `/internal/form`, then starts the server via `@devvit/web/server`'s `createServer`/`getServerPort`.
+- `devvit.json` declares the `server` entry, the `reddit`/`redis`/`http` permissions and the two HTTP domains, all installation-scoped settings (see Settings section below), the "Configure bot" menu item and its two forms, the "Review pending post" menu item and its form's submit endpoint, all three scheduler task names with their endpoints, and the four triggers.
+- `src/server/index.ts` builds the Hono app, mounts `routes/check-episodes.ts`, `routes/pending-post.ts`, `routes/regenerate.ts` under `/internal/scheduler`, `routes/triggers.ts` under `/internal/triggers`, `routes/configure-bot.ts` under `/internal/menu` and `/internal/form`, `routes/menu.ts` under `/internal/menu`, and `routes/forms.ts` under `/internal/form`, then starts the server via `@devvit/web/server`'s `createServer`/`getServerPort`.
 - The Google API key is stored in Redis under `google_api_key` via the "Configure bot" form (not a Devvit setting, because Devvit settings are readable by mods via the settings UI).
 - The Gemini model and thinking level live in Redis (`gemini_model`, `gemini_thinking_level`), set via "Configure bot"; `getGeminiChoice` in `src/server/configureBot.ts` reads them for every job (`routes/check-episodes.ts` and `routes/configure-bot.ts` both call it).
-- `routes/triggers.ts` wires the `AppInstall`/`AppUpgrade` triggers (`ensureCheckerScheduled('reset')`: cancel every existing checker job, schedule a fresh one) and the `PostSubmit`/`CommentSubmit` triggers (`ensureCheckerScheduled('heal')`). See "Scheduler jobs" for why. "Configure bot" also heals on every press; the same should apply once the remaining mod menu items exist.
+- `routes/triggers.ts` wires the `AppInstall`/`AppUpgrade` triggers (`ensureCheckerScheduled('reset')`: cancel every existing checker job, schedule a fresh one) and the `PostSubmit`/`CommentSubmit` triggers (`ensureCheckerScheduled('heal')`). See "Scheduler jobs" for why. "Configure bot" and `routes/menu.ts`'s "Review pending post" also heal on every press; the same should apply once the remaining mod menu items exist.
 - The Hono app itself is the entry point Devvit Web's `server.entry` in `devvit.json` points at — there is no required default export (unlike the removed Blocks `export default Devvit` contract).
 
 ---
