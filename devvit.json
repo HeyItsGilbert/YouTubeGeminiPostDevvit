@@ -28,6 +28,13 @@
         "endpoint": "/internal/menu/review-pending-post"
       },
       {
+        "label": "Check for new videos",
+        "description": "Check the YouTube playlist for a new video now.",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/check-new-videos"
+      },
+      {
         "label": "Regenerate discussion",
         "description": "Rewrite this post's discussion comment with fresh Gemini output",
         "forUserType": "moderator",
@@ -41,7 +48,8 @@
     "configureBotThinkingLevel": "/internal/form/configure-bot-thinking-level",
     "reviewPendingPost": "/internal/form/review-pending-post-submit",
     "regenerateStep1Form": "/internal/form/regenerate-step1",
-    "regenerateStep2Form": "/internal/form/regenerate-step2"
+    "regenerateStep2Form": "/internal/form/regenerate-step2",
+    "checkNewVideos": "/internal/form/check-new-videos-submit"
   },
   "scheduler": {
     "tasks": {

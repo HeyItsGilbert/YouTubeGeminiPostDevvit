@@ -20,6 +20,7 @@ import {
   updatePendingPostForReview,
 } from '../pendingPost.js';
 import { deleteVideoRecord, setVideoRecord } from '../videoRegistry.js';
+import { scheduleManualCheck } from '../manualCheck.js';
 
 export const forms = new Hono();
 
@@ -90,4 +91,10 @@ forms.post('/review-pending-post-submit', async (c) => {
   });
 
   return c.json<UiResponse>({ showToast: 'Publishing pending post...' }, 200);
+});
+
+forms.post('/check-new-videos-submit', async (c) => {
+  const values = await c.req.json<{ forceRepost?: boolean }>();
+  await scheduleManualCheck({ reddit, redis, scheduler }, values.forceRepost === true);
+  return c.json<UiResponse>({ showToast: 'Checking for new videos. You will get a message if nothing is posted.' }, 200);
 });
