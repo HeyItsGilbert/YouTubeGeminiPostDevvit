@@ -46,14 +46,9 @@ src/
                     and individual videos by ID (fetchYouTubeVideoById, used by regeneration).
     llmClient.ts    Gemini API client (via OpenAI-compatible endpoint). Delegates
                     message building and response parsing to postUtils.ts.
-    notify.ts       sendFailureNotification: PMs notification mods (or the triggering
-                    mod as fallback) when a job fails. Shared by check-episodes.ts and
-                    regenerate.ts — mods can't read app logs, so jobs must PM on failure.
     postManager.ts  Reddit operations: link post submission with a distinguished, stickied
                     discussion comment, flair application, bot author flair, comment editing,
                     and pin rotation.
-    redisKeys.ts    Redis key constants shared by more than one feature module
-                    (currently just google_api_key). Feature-local keys stay where used.
     regenerateDraft.ts Redis-backed, TTL'd (1 h) draft storage keyed by user ID — carries
                     "Regenerate discussion" step 1's answers to step 2 of the form chain.
     regenerateForms.ts Pure `Form` builders for the "Regenerate discussion" step 1/step 2
@@ -127,7 +122,8 @@ same migration.
 ```
 AppInstall / AppUpgrade trigger        → ensureCheckerScheduled('reset')
 PostSubmit / CommentSubmit trigger     → ensureCheckerScheduled('heal', ≤ once per 30 min)
-"Regenerate discussion" menu press     → ensureCheckerScheduled('heal', ≤ once per 30 min)
+"Configure bot" / "Review pending post" / "Regenerate discussion" menu press
+                                      → ensureCheckerScheduled('heal', ≤ once per 30 min)
   └─► scheduler.runJob('check_new_episodes', cron='*/30 * * * *') when missing
 
 check_new_episodes job (src/server/routes/check-episodes.ts)
@@ -237,7 +233,7 @@ Platform-agnostic pure utilities. **No Devvit APIs, no browser-only globals.** S
 
 ---
 
-### `src/episodeChecker.ts`
+### `src/server/episodeChecker.ts`
 
 **Exported functions:**
 
@@ -252,7 +248,7 @@ Platform-agnostic pure utilities. **No Devvit APIs, no browser-only globals.** S
 
 ---
 
-### `src/llmClient.ts`
+### `src/server/llmClient.ts`
 
 **Exported function:** `generateEpisodePost(apiKey, episode, systemPrompt, geminiModel, thinkingLevel) → Promise<GeneratedPost>`
 
@@ -286,7 +282,7 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 
 ---
 
-### `src/postManager.ts`
+### `src/server/postManager.ts`
 
 **Exported functions:**
 
@@ -302,15 +298,16 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 
 ---
 
-### `src/server/geminiConfig.ts`, `src/server/notify.ts`, `src/server/redisKeys.ts`
+### `src/server/configureBot.ts` (shared exports) and `src/server/notifications.ts`
 
-Small shared modules pulled out so `check-episodes.ts` and `regenerate.ts` don't duplicate the same logic:
+Beyond the form/decision builders already listed in the repository map, two further exports are shared across feature modules so `check-episodes.ts`, `regenerate.ts`, and `pending-post.ts` don't duplicate the same logic:
 
-| Module | Export | Purpose |
-|---|---|---|
-| `geminiConfig.ts` | `getGeminiChoice(redis) → Promise<{ model, thinkingLevel }>` | The mod-configured model/thinking-level override, or `DEFAULT_GEMINI_MODEL` with no override if unset. |
-| `notify.ts` | `sendFailureNotification(reddit, notificationMods, fallbackRecipient, subject, text)` | PMs every configured notification mod, or the triggering mod as fallback; never throws. |
-| `redisKeys.ts` | `REDIS_KEY_GOOGLE_API_KEY` | The one Redis key genuinely shared across feature modules. Feature-local keys (e.g. the pending-post keys) stay declared where they're used. |
+| Export | Module | Signature | Purpose |
+|---|---|---|---|
+| `getGeminiChoice` | `configureBot.ts` | `(redis) → Promise<{ model, thinkingLevel }>` | The mod-configured model/thinking-level override, or `DEFAULT_GEMINI_MODEL` with no override if unset. |
+| `REDIS_KEY_GOOGLE_API_KEY` | `configureBot.ts` | `'google_api_key'` | The one Redis key genuinely shared across feature modules — `check-episodes.ts` and `regenerate.ts` both read it. |
+| `sendFailureNotification` | `notifications.ts` | `(reddit, notificationMods, fallbackRecipient, subject, text) → Promise<void>` | PMs every configured notification mod, or the triggering mod as fallback; never throws. |
+| `FAILURE_HELP` | `notifications.ts` | `string` | Closing line appended to every failure PM — things a mod can act on, since they can't read app logs. |
 
 ---
 
@@ -378,6 +375,8 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | `check_triggered_by` | string | "Check for new videos" menu item / playtest form | `check_new_episodes` (manual-run outcome PMs and error handler), `post_pending_episode` error handler (when no `triggeredBy` job data) | Username of the mod who manually triggered; used to PM outcomes and failures |
 | `pending_post` | string (JSON) | `check_new_episodes` (approval gate path), "Review pending post" form (Publish writes edits back) | `check_new_episodes` (skips generation while set), `post_pending_episode`, "Review pending post" menu item and form | Serialised `PendingPost` object holding generated title, body, url, videoId, videoTitle, and generatedAt timestamp. Deleted when the post is published, discarded, or rejected. |
 | `pending_post_job_id` | string | `check_new_episodes` (when `autoApproveWindowMinutes > 0`) | "Review pending post" form | Scheduler job ID for the auto-approve timer. Cancelled and deleted when a mod acts first. |
+| `googleApiKey` (legacy setting, not a Redis key) | string | Pre-Devvit-Web installs, via the old `Devvit.addSettings` scope | Nothing — undeclared in `devvit.json`, unread by any current code | Orphaned: carried over from before the API key moved into Redis (`google_api_key`). Still readable via `settings.getAll()` on any install upgraded from that era, but invisible in the Settings UI since only declared keys render there (confirmed live on a trial upgrade, #37). A stray copy of the real API key — don't assume it's absent. |
+| `geminiModel` (legacy setting, not a Redis key) | string | Pre-Devvit-Web installs, via the old `Devvit.addSettings` scope | Nothing — undeclared in `devvit.json`, unread by any current code | Same carryover as `googleApiKey`, from before the model override moved into Redis (`gemini_model`). Present-but-unread; `getGeminiChoice` never looks at it. |
 
 Keys no longer written (may linger on older installs, safe to delete): `last_episode_guid`, `last_episode_post_id`, `last_episode_comment_id`, `force_repost`, `regenerate_triggered_by`.
 
@@ -459,7 +458,7 @@ Add an entry under `menu.items` in `devvit.json` pointing at a new `/internal/me
 
 ### Support multiple playlists
 
-Currently one playlist ID per subreddit installation. To fan out, the `check_new_episodes` job would need to accept a list of IDs and call `fetchLatestYouTubeEpisode` once per ID, with separate deduplication keys per playlist.
+Currently one playlist ID per subreddit installation. To fan out, the `check_new_episodes` job would need to accept a list of IDs, call `fetchPlaylistVideos` for each one, and use separate deduplication keys per playlist.
 
 ---
 
