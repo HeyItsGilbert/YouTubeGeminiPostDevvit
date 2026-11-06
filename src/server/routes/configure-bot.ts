@@ -6,12 +6,15 @@
  * live `redis`/`scheduler` clients and the HTTP contract Devvit Web expects.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import { Hono } from 'hono';
 import type { UiResponse } from '@devvit/web/shared';
 import { context, redis, scheduler } from '@devvit/web/server';
 import { ensureCheckerScheduled } from '../checkerSchedule.js';
 import {
   CONFIGURE_BOT_DRAFT_EXPIRY_MS,
+  REDIS_KEY_CONFIGURE_BOT_REVISION,
   REDIS_KEY_GEMINI_MODEL,
   REDIS_KEY_GOOGLE_API_KEY,
   REDIS_KEY_STICKY_SLOT,
@@ -55,24 +58,41 @@ configureBot.post('/form/configure-bot', async (c) => {
   const values = await c.req.json<ConfigureBotSubmission>();
   const previous = await getGeminiChoice(redis);
   const decision = decideConfigureBotSubmission(values, previous);
+  const draftKey = configureBotDraftKey(context.userId);
+  const revision = randomUUID();
+  const transaction = await redis.watch(draftKey);
 
-  await Promise.all([
-    decision.apiKeyToSet ? redis.set(REDIS_KEY_GOOGLE_API_KEY, decision.apiKeyToSet) : Promise.resolve(),
-    redis.set(REDIS_KEY_STICKY_SLOT, decision.slot),
-    decision.storedModel ? redis.set(REDIS_KEY_GEMINI_MODEL, decision.storedModel) : redis.del(REDIS_KEY_GEMINI_MODEL),
-    decision.clearThinkingLevel ? redis.del(REDIS_KEY_THINKING_LEVEL) : Promise.resolve(),
-  ]);
+  await transaction.multi();
+  if (decision.apiKeyToSet) {
+    await transaction.set(REDIS_KEY_GOOGLE_API_KEY, decision.apiKeyToSet);
+  }
+  await transaction.set(REDIS_KEY_STICKY_SLOT, decision.slot);
+  if (decision.storedModel) {
+    await transaction.set(REDIS_KEY_GEMINI_MODEL, decision.storedModel);
+  } else {
+    await transaction.del(REDIS_KEY_GEMINI_MODEL);
+  }
+  if (decision.clearThinkingLevel) {
+    await transaction.del(REDIS_KEY_THINKING_LEVEL);
+  }
+  await transaction.set(REDIS_KEY_CONFIGURE_BOT_REVISION, revision);
+  if (decision.openThinkingForm) {
+    await transaction.set(draftKey, JSON.stringify({ model: decision.model, revision }), {
+      expiration: new Date(Date.now() + CONFIGURE_BOT_DRAFT_EXPIRY_MS),
+    });
+  } else {
+    await transaction.del(draftKey);
+  }
+
+  if ((await transaction.exec()).length === 0) {
+    return c.json<UiResponse>({
+      showToast: 'Configuration changed while this form was submitted. Open "Configure bot" and try again.',
+    });
+  }
 
   if (!decision.openThinkingForm) {
     return c.json<UiResponse>({ showToast: decision.toast });
   }
-
-  // Carry the model this step just resolved into step 2 — a form submit
-  // endpoint only receives its own fields, so it can't ride along on the
-  // showForm response itself.
-  await redis.set(configureBotDraftKey(context.userId), JSON.stringify({ model: decision.model }), {
-    expiration: new Date(Date.now() + CONFIGURE_BOT_DRAFT_EXPIRY_MS),
-  });
 
   return c.json<UiResponse>({
     showForm: {
@@ -85,18 +105,38 @@ configureBot.post('/form/configure-bot', async (c) => {
 configureBot.post('/form/configure-bot-thinking-level', async (c) => {
   const values = await c.req.json<ThinkingLevelSubmission>();
   const draftKey = configureBotDraftKey(context.userId);
-  const draftJson = await redis.get(draftKey);
+  const transaction = await redis.watch(draftKey, REDIS_KEY_CONFIGURE_BOT_REVISION);
+  const [draftJson, revision] = await Promise.all([redis.get(draftKey), redis.get(REDIS_KEY_CONFIGURE_BOT_REVISION)]);
 
   if (!draftJson) {
+    await transaction.unwatch();
     return c.json<UiResponse>({
       showToast: 'This form expired. Open "Configure bot" again to choose a thinking level.',
     });
   }
 
-  await redis.del(draftKey);
-  const { model } = JSON.parse(draftJson) as { model: string };
-  const decision = decideThinkingLevelSubmission(model, values.thinkingLevel);
-  await (decision.level ? redis.set(REDIS_KEY_THINKING_LEVEL, decision.level) : redis.del(REDIS_KEY_THINKING_LEVEL));
+  const draft = JSON.parse(draftJson) as { model: string; revision?: string };
+  if (!draft.revision || draft.revision !== revision) {
+    await transaction.unwatch();
+    return c.json<UiResponse>({
+      showToast: 'Configuration changed while this form was open. Open "Configure bot" and try again.',
+    });
+  }
+
+  const decision = decideThinkingLevelSubmission(draft.model, values.thinkingLevel);
+  await transaction.multi();
+  if (decision.level) {
+    await transaction.set(REDIS_KEY_THINKING_LEVEL, decision.level);
+  } else {
+    await transaction.del(REDIS_KEY_THINKING_LEVEL);
+  }
+  await transaction.del(draftKey);
+
+  if ((await transaction.exec()).length === 0) {
+    return c.json<UiResponse>({
+      showToast: 'Configuration changed while this form was submitted. Open "Configure bot" and try again.',
+    });
+  }
 
   return c.json<UiResponse>({ showToast: decision.toast });
 });

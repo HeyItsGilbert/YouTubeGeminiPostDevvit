@@ -29,6 +29,9 @@ export const REDIS_KEY_STICKY_SLOT = 'last_episode_sticky_slot';
 export const REDIS_KEY_GEMINI_MODEL = 'gemini_model';
 export const REDIS_KEY_THINKING_LEVEL = 'gemini_thinking_level';
 
+/** Changes whenever Configure bot saves, invalidating older thinking-level drafts. */
+export const REDIS_KEY_CONFIGURE_BOT_REVISION = 'configure_bot_revision';
+
 /** Select value meaning "no override". */
 export const DEFAULT_CHOICE = 'default';
 
