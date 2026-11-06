@@ -5,9 +5,11 @@
 // structurally, so no adapter is needed at the call site.
 
 /** Reddit "thing" ID prefixes this module handles — kept local rather than
- * importing `T1`/`T3` from the Devvit SDK. */
-type PostId = `t3_${string}`;
-type CommentId = `t1_${string}`;
+ * importing `T1`/`T3` from the Devvit SDK. Exported so callers that read a
+ * stored ID (e.g. from the video registry) can brand it back before passing
+ * it to this module's functions. */
+export type PostId = `t3_${string}`;
+export type CommentId = `t1_${string}`;
 
 type RedditClient = {
   submitPost(options: { title: string; subredditName: string; url: string }): Promise<{

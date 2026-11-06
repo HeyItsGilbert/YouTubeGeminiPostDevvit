@@ -4,6 +4,7 @@ import {
   deleteVideoRecord,
   findVideoByPostId,
   getAllVideoRecords,
+  isRegeneratable,
   setVideoRecord,
 } from './videoRegistry.js';
 import type { VideoRecord } from '../types.js';
@@ -122,6 +123,25 @@ describe('findVideoByPostId', () => {
     const redis = createFakeRedis();
     await setVideoRecord(redis, 'vid1', record({ status: 'posted', postId: 't3_abc' }));
     expect(await findVideoByPostId(redis, 't3_missing')).toBeNull();
+  });
+});
+
+describe('isRegeneratable', () => {
+  it('accepts a posted record with a tracked discussion comment', () => {
+    expect(isRegeneratable(record({ status: 'posted', postId: 't3_abc', commentId: 't1_xyz' }))).toBe(true);
+  });
+
+  it('rejects a posted record with no tracked comment (predates the comment-based flow)', () => {
+    expect(isRegeneratable(record({ status: 'posted', postId: 't3_abc' }))).toBe(false);
+  });
+
+  it('rejects a record that is not posted', () => {
+    expect(isRegeneratable(record({ status: 'pending', commentId: 't1_xyz' }))).toBe(false);
+  });
+
+  it('rejects a missing record', () => {
+    expect(isRegeneratable(null)).toBe(false);
+    expect(isRegeneratable(undefined)).toBe(false);
   });
 });
 

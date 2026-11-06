@@ -48,6 +48,18 @@ export async function findVideoByPostId(
   return null;
 }
 
+/**
+ * Whether a video's registry record points at a regeneratable Episode Post:
+ * fully `posted` (not pending/skipped/excluded/rejected/private) with a
+ * tracked discussion comment. Posts created before the comment-based flow
+ * landed have no `commentId` and are not regeneratable.
+ */
+export function isRegeneratable(
+  record: VideoRecord | null | undefined
+): record is VideoRecord & { commentId: string } {
+  return !!record && record.status === 'posted' && !!record.commentId;
+}
+
 async function isPosted(redis: RedisClient, videoId: string): Promise<boolean> {
   const json = await redis.hGet(REGISTRY_KEY, videoId);
   if (!json) return false;

@@ -14,13 +14,13 @@ const internal = new Hono();
 
 internal.route('/scheduler', checkEpisodes);
 internal.route('/scheduler', pendingPost);
-internal.route('/scheduler', regenerate);
 internal.route('/triggers', triggers);
 internal.route('/', configureBot);
 internal.route('/menu', menu);
 internal.route('/form', forms);
 
 app.route('/internal', internal);
+app.route('/internal', regenerate);
 
 serve({
   fetch: app.fetch,
