@@ -21,21 +21,24 @@ Issues & Requests: [HeyItsGilbert/YouTubeGeminiPostDevvit](https://github.com/He
 - **Notifies the triggering mod by PM** if a manually triggered action fails
 - **Optional mod approval gate** — hold generated posts for review before publishing, with an optional auto-approve timer
 
-Moderators get three items in the subreddit's **"…"** menu (next to Mod Tools):
+Moderators get two items in the subreddit's **"…"** menu (next to Mod Tools):
 
 - **Configure bot** — set the Google API key and which sticky slot (1 or 2)
   episode posts take. Under **Advanced (optional)** you can override the
   Gemini model (default: Gemini Flash Latest) and thinking level (default:
   the model decides); most subreddits should leave these alone.
-- **Check for new videos** — run a check immediately.
 - **Review pending post** — when mod approval is enabled, edit the pending post,
   then publish it, discard it (the next check treats the video as unseen), or
-  reject the video (never post it).
+  reject the video (never post it). Submit within about 10 minutes of opening
+  the form — Reddit silently drops a late submission with no on-screen error,
+  so reopen the menu item and try again if nothing happens.
 
 On any episode post, the post menu offers **Regenerate discussion**: rewrite the
 discussion comment with fresh Gemini output, optionally with a different model,
-thinking level, or edited system prompt for that one regeneration. If any manual action fails,
-the triggering mod receives a Reddit PM with the error details. Scheduled
+thinking level, or edited system prompt for that one regeneration. As with
+"Review pending post", submit within about 10 minutes of opening the form, or
+Reddit drops the submission silently. If any manual action fails, the
+triggering mod receives a Reddit PM with the error details. Scheduled
 (cron) runs are self-healing — state is only persisted on success, so the next
 30-minute tick retries automatically.
 
@@ -46,7 +49,7 @@ the triggering mod receives a Reddit PM with the error details. Scheduled
 3. Paste your key into the **Google API Key** field and click **Save**. Leave it blank later
    to keep the saved key while changing the pin slot.
 
-The key is stored in the subreddit's Redis store. To get a key, visit the visit
+The key is stored in the subreddit's Redis store. To get a key, visit
 the [AI Studio](https://aistudio.google.com/), create a project and API key.
 Then go to [Google Cloud Console](https://console.cloud.google.com/), switch to
 the new project, and enable both the **YouTube Data API v3**.
