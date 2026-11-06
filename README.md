@@ -11,6 +11,8 @@ to validate your API key and test different prompts.
 
 Issues & Requests: [HeyItsGilbert/YouTubeGeminiPostDevvit](https://github.com/HeyItsGilbert/YouTubeGeminiPostDevvit/issues)
 
+Release notes: [CHANGELOG.md](CHANGELOG.md)
+
 ## What it does
 
 - **Monitors a YouTube playlist** every 30 minutes via a scheduled job
@@ -21,12 +23,14 @@ Issues & Requests: [HeyItsGilbert/YouTubeGeminiPostDevvit](https://github.com/He
 - **Notifies the triggering mod by PM** if a manually triggered action fails
 - **Optional mod approval gate** — hold generated posts for review before publishing, with an optional auto-approve timer
 
-Moderators get two items in the subreddit's **"…"** menu (next to Mod Tools):
+Moderators get three items in the subreddit's **"…"** menu (next to Mod Tools):
 
 - **Configure bot** — set the Google API key and which sticky slot (1 or 2)
   episode posts take. Under **Advanced (optional)** you can override the
   Gemini model (default: Gemini Flash Latest) and thinking level (default:
   the model decides); most subreddits should leave these alone.
+- **Check for new videos** — run a check immediately. On Playtest installs,
+  the form also offers a force-repost testing tool.
 - **Review pending post** — when mod approval is enabled, edit the pending post,
   then publish it, discard it (the next check treats the video as unseen), or
   reject the video (never post it). Submit within about 10 minutes of opening
