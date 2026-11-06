@@ -54,5 +54,5 @@ export function resolveThinkingLevel(modelId: string, chosen?: string | null): T
 }
 
 export function describeThinkingLevel(level: ThinkingLevel): string {
-  return level === 'none' ? 'None (thinking off)' : level[0].toUpperCase() + level.slice(1);
+  return level === 'none' ? 'None (thinking off)' : level.charAt(0).toUpperCase() + level.slice(1);
 }

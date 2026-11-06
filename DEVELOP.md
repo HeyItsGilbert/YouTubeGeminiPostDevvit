@@ -4,23 +4,27 @@
 
 ```
 src/
-  main.ts              -- Entry point: settings, scheduler, triggers, menu actions
-  episodeChecker.ts    -- YouTube Data API: fetch latest video from playlist
-  llmClient.ts         -- Gemini API: generate post with mod-supplied prompt
-  geminiModels.ts      -- Shared model catalog helpers: ordering, default model,
-                          accepted thinking levels
-  geminiModels.generated.ts -- Model catalog written by `npm run models:sync`
-  postManager.ts       -- Reddit post creation, flair, pin management
-  postUtils.ts         -- Shared pure utilities (no Devvit/browser deps):
-                          resolvePlaylistId, buildUserMessage,
-                          parseGeneratedResponse, assemblePostBody
-  videoRegistry.ts     -- Redis-backed registry of processed videos
-  types.ts             -- Shared TypeScript types (EpisodeData, GeneratedPost, VideoRecord, GeminiModel)
+  types.ts, postUtils.ts, geminiModels.ts, geminiModels.generated.ts
+                        -- Platform-agnostic shared code (no Devvit/browser deps),
+                           also imported by preview-site/
+  server/
+    index.ts             -- Hono app entry point, built to dist/server/index.cjs
+    checkerSchedule.ts   -- Keeps the recurring check_new_episodes job alive
+    episodeChecker.ts    -- YouTube Data API: fetch videos from a playlist
+    llmClient.ts         -- Gemini API: generate a post with the mod-supplied prompt
+    postManager.ts        -- Reddit post creation, flair, pin management
+    videoRegistry.ts      -- Redis-backed registry of processed videos
+    routes/               -- check-episodes.ts, pending-post.ts, regenerate.ts,
+                              triggers.ts — one Hono route module per feature
 
 scripts/sync-gemini-models.mjs -- Refreshes the Gemini model catalog
+devvit.json                    -- App manifest: server entry, settings, scheduler
+                                   tasks, triggers (see AGENTS.md for the full map)
 preview-site/  -- React + Vite preview web app (deployed to Netlify)
 netlify.toml                  -- Netlify deploy config (base: preview-site/)
 ```
+
+See `AGENTS.md` for the full repository map, architecture, and module reference.
 
 ## 1. Install dependencies
 
@@ -37,6 +41,12 @@ npm run dev
 This installs the app to your test subreddit and streams logs.
 
 ## 3. Configure the bot
+
+> **Current build status:** "Configure bot" (and the other mod menu items) are
+> not yet implemented on the Devvit Web server — only the recurring
+> `check_new_episodes` job is wired up so far. Until that menu item lands,
+> seed `google_api_key` into the installed app's Redis store directly for
+> local testing.
 
 Each subreddit stores its own Google API key and Gemini model via a mod menu action.
 
@@ -87,6 +97,8 @@ levels from the previous catalog. Commit the regenerated file.
 | Command              | Description                                             |
 |----------------------|---------------------------------------------------------|
 | `npm run dev`        | Playtest -- installs to test subreddit and streams logs |
+| `npm run build`      | Build the production server bundle (`vite build`)       |
+| `npm test`           | Run the unit test suite (`vitest run`)                  |
 | `npm run deploy`     | Upload app to the App Directory                         |
 | `npm run launch`     | Publish the app                                         |
 | `npm run type-check` | TypeScript type check                                   |
@@ -94,21 +106,8 @@ levels from the previous catalog. Commit the regenerated file.
 
 # Redis keys
 
-| Key                       | Purpose                                                          |
-|---------------------------|------------------------------------------------------------------|
-| `google_api_key`          | Google API key (set via mod menu, not stored in settings)        |
-| `video_registry`          | Hash of videoId → VideoRecord JSON (deduplication + status)      |
-| `last_episode_guid`       | Video ID of last posted video (legacy, kept for compat)          |
-| `last_episode_post_id`    | Reddit post ID of currently pinned post                          |
-| `episode_checker_job_id`  | Scheduler job ID (used for clean re-install)                     |
-| `force_repost`            | One-shot flag: skip registry check for newest video next run     |
-| `check_triggered_by`      | Mod username — used to PM on failure after manual trigger        |
-| `regenerate_triggered_by` | Mod username — used to PM on failure after regeneration trigger  |
-| `pending_post`            | JSON blob of queued post (title, body, url, videoId, etc.)       |
-| `pending_post_job_id`     | Scheduler job ID for the auto-approve timer                      |
-| `gemini_model`            | Gemini model chosen in Configure bot                             |
-| `gemini_thinking_level`   | Thinking level chosen in Configure bot                           |
-| `regenerate_draft:<userId>` | Regenerate form step 1 answers, read by step 2 (1 h expiry)    |
+See the "Redis state" table in `AGENTS.md` for the authoritative list of every
+key this app reads and writes, what writes/reads each one, and its purpose.
 
 # Learn more
 

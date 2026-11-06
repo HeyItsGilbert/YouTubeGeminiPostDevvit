@@ -1,4 +1,4 @@
-import { type VideoRecord } from './types.js';
+import { type VideoRecord } from '../types.js';
 
 /** Redis hash key — each field is a video ID, each value is a JSON VideoRecord */
 export const REGISTRY_KEY = 'video_registry';
