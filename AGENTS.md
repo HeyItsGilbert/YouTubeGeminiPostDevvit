@@ -39,19 +39,30 @@ src/
                     runtime job alive ('reset' on install/upgrade, throttled 'heal'
                     elsewhere).
     configureBot.ts   Pure field/decision builders for "Configure bot": form
-                    assembly, submission decisions, and the Redis keys it shares
-                    with check-episodes.ts. Devvit-SDK-free — the testable seam.
-    episodeChecker.ts YouTube Data API v3 client. Fetches playlists and individual
-                    videos.
+                    assembly, submission decisions, and `getGeminiChoice`, the
+                    Redis keys it shares with check-episodes.ts and
+                    regenerate.ts. Devvit-SDK-free — the testable seam.
+    episodeChecker.ts YouTube Data API v3 client. Fetches playlists (fetchPlaylistVideos)
+                    and individual videos by ID (fetchYouTubeVideoById, used by regeneration).
     llmClient.ts    Gemini API client (via OpenAI-compatible endpoint). Delegates
                     message building and response parsing to postUtils.ts.
+    notify.ts       sendFailureNotification: PMs notification mods (or the triggering
+                    mod as fallback) when a job fails. Shared by check-episodes.ts and
+                    regenerate.ts — mods can't read app logs, so jobs must PM on failure.
     postManager.ts  Reddit operations: link post submission with a distinguished, stickied
                     discussion comment, flair application, bot author flair, comment editing,
                     and pin rotation.
+    redisKeys.ts    Redis key constants shared by more than one feature module
+                    (currently just google_api_key). Feature-local keys stay where used.
+    regenerateDraft.ts Redis-backed, TTL'd (1 h) draft storage keyed by user ID — carries
+                    "Regenerate discussion" step 1's answers to step 2 of the form chain.
+    regenerateForms.ts Pure `Form` builders for the "Regenerate discussion" step 1/step 2
+                    forms — no Devvit server/client imports, so they're unit-testable.
     videoRegistry.ts Redis hash-backed registry of every video the bot has seen.
                     Stores status (posted/pending/excluded/rejected/skipped/private) and
                     postId/commentId per video ID. Posted records are terminal: never
-                    overwritten (except by a forced repost) or deleted.
+                    overwritten (except by a forced repost) or deleted. isRegeneratable
+                    checks whether a record is a posted Episode Post with a tracked comment.
     pendingPost.ts  Pending Post helpers shared by check-episodes.ts, the
                     post_pending_episode job, and the "Review pending post" menu +
                     form routes: PendingPost type, Redis key constants, get/clear/
@@ -59,7 +70,8 @@ src/
                     review form builder.
     notifications.ts sendFailureNotification + FAILURE_HELP: PMs notificationMods
                     (or the triggering mod as fallback) on a failure. Shared by
-                    check-episodes.ts and the post_pending_episode job.
+                    check-episodes.ts, the post_pending_episode job, and
+                    regenerate.ts.
     routes/
       check-episodes.ts  `check_new_episodes` scheduler task: the full recurring
                     video-check pipeline.
@@ -74,8 +86,8 @@ src/
       forms.ts      Form submit handlers. "Review pending post" resolves Publish
                     (writes edits back, triggers post_pending_episode now with
                     job data `{ triggeredBy }`), Discard, or Reject.
-      regenerate.ts      `regenerate_discussion` scheduler task — declared, stub only;
-                    full logic lands with "Regenerate discussion".
+      regenerate.ts      "Regenerate discussion" menu item, its two-step form chain,
+                    and the `regenerate_discussion` scheduler task that does the work.
       triggers.ts   onAppInstall/onAppUpgrade/onPostSubmit/onCommentSubmit — all four
                     call `ensureCheckerScheduled`.
 
@@ -99,13 +111,12 @@ preview-site/
 ```
 
 **Note on current build status:** The `check_new_episodes` pipeline (the recurring
-video-check job), "Configure bot", and "Review pending post" (menu item, form, and
-the `post_pending_episode` job) are wired up on Devvit Web. "Check for new videos"
-and "Regenerate discussion" (menu items, forms, and the `regenerate_discussion` job
-logic) still only exist in the sections below as the target design — they land in
-later tickets on the same migration. `regenerate_discussion`'s scheduler task is
-declared in `devvit.json` with a stub route handler so Devvit Web's "every job
-must be declared" requirement is met.
+video-check job), "Configure bot", "Review pending post" (menu item, form, and
+the `post_pending_episode` job), and "Regenerate discussion" (menu item,
+two-step form chain, and the `regenerate_discussion` job) are wired up on
+Devvit Web. "Check for new videos" (menu item and form) still only exists in
+the section below as the target design — it lands in a later ticket on the
+same migration.
 
 ---
 
@@ -116,7 +127,7 @@ must be declared" requirement is met.
 ```
 AppInstall / AppUpgrade trigger        → ensureCheckerScheduled('reset')
 PostSubmit / CommentSubmit trigger     → ensureCheckerScheduled('heal', ≤ once per 30 min)
-(mod menu press, once menus exist)       → ensureCheckerScheduled('heal', ≤ once per 30 min)
+"Regenerate discussion" menu press     → ensureCheckerScheduled('heal', ≤ once per 30 min)
   └─► scheduler.runJob('check_new_episodes', cron='*/30 * * * *') when missing
 
 check_new_episodes job (src/server/routes/check-episodes.ts)
@@ -291,15 +302,40 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 
 ---
 
+### `src/server/geminiConfig.ts`, `src/server/notify.ts`, `src/server/redisKeys.ts`
+
+Small shared modules pulled out so `check-episodes.ts` and `regenerate.ts` don't duplicate the same logic:
+
+| Module | Export | Purpose |
+|---|---|---|
+| `geminiConfig.ts` | `getGeminiChoice(redis) → Promise<{ model, thinkingLevel }>` | The mod-configured model/thinking-level override, or `DEFAULT_GEMINI_MODEL` with no override if unset. |
+| `notify.ts` | `sendFailureNotification(reddit, notificationMods, fallbackRecipient, subject, text)` | PMs every configured notification mod, or the triggering mod as fallback; never throws. |
+| `redisKeys.ts` | `REDIS_KEY_GOOGLE_API_KEY` | The one Redis key genuinely shared across feature modules. Feature-local keys (e.g. the pending-post keys) stay declared where they're used. |
+
+---
+
+### `src/server/routes/regenerate.ts` and its form helpers
+
+Implements "Regenerate discussion" end to end: a menu item, a two-step form chain, and the `regenerate_discussion` scheduler task. Devvit Web gives a form-submit handler only its own form's submitted field values — no implicit postId or prior-step data — so the chain carries state itself:
+
+1. **Menu press** (`/internal/menu/regenerate-discussion`) — `findVideoByPostId` + `isRegeneratable` (in `videoRegistry.ts`) check the pressed post is a posted Episode Post with a tracked `commentId`; otherwise a toast explains why and no form opens. On success, heals the checker schedule (see above) and shows step 1, built by `buildStep1Form` in `regenerateForms.ts`.
+2. **Step 1 submit** (`/internal/form/regenerate-step1`) — reads the target post from `context.postId` (reliable for this one request, per Devvit Web's form-chain behavior). Without the "choose a thinking level" toggle, resolves the thinking level from the configured default and schedules `regenerate_discussion` immediately. With the toggle on, `saveRegenerateDraft` (`regenerateDraft.ts`) persists the post ID, video ID, comment ID, prompt, and model to Redis under `regenerate_draft:<userId>` (1 h TTL) and shows step 2.
+3. **Step 2 submit** (`/internal/form/regenerate-step2`, only reached via the toggle) — `loadRegenerateDraft`/`clearRegenerateDraft` read then delete the draft (keyed by `context.userId`, the only context data this request needs), resolve the chosen thinking level, and schedule `regenerate_discussion`.
+4. **`regenerate_discussion` job** — fetches the video by ID (`fetchYouTubeVideoById`), calls `generateEpisodePost` with the one-off prompt/model/level, reassembles the body with the subreddit's configured `prependText`/`appendText` (`assemblePostBody`), and calls `updateEpisodePost` to edit the existing comment in place. Never resubmits the post, reapplies flair, or touches the pin. Failures PM the triggering mod via `sendFailureNotification`.
+
+`regenerateForms.ts` keeps the two `Form` builders pure (no Devvit server/client imports) so they're unit-testable without a live Devvit context; `routes/regenerate.ts` is the only module that talks to Redis/Reddit/the scheduler.
+
+---
+
 ### `src/server/index.ts` and `devvit.json`
 
 **Responsibilities (split between the manifest and the Hono entry point):**
 
-- `devvit.json` declares the `server` entry, the `reddit`/`redis`/`http` permissions and the two HTTP domains, all installation-scoped settings (see Settings section below), the "Configure bot" menu item and its two forms, the "Review pending post" menu item and its form's submit endpoint, all three scheduler task names with their endpoints, and the four triggers.
-- `src/server/index.ts` builds the Hono app, mounts `routes/check-episodes.ts`, `routes/pending-post.ts`, `routes/regenerate.ts` under `/internal/scheduler`, `routes/triggers.ts` under `/internal/triggers`, `routes/configure-bot.ts` under `/internal/menu` and `/internal/form`, `routes/menu.ts` under `/internal/menu`, and `routes/forms.ts` under `/internal/form`, then starts the server via `@devvit/web/server`'s `createServer`/`getServerPort`.
+- `devvit.json` declares the `server` entry, the `reddit`/`redis`/`http` permissions and the two HTTP domains, all installation-scoped settings (see Settings section below), the "Configure bot" menu item and its two forms, the "Review pending post" menu item and its form's submit endpoint, the "Regenerate discussion" menu item and its two forms, all three scheduler task names with their endpoints, and the four triggers.
+- `src/server/index.ts` builds the Hono app, mounts `routes/check-episodes.ts` and `routes/pending-post.ts` under `/internal/scheduler`, `routes/triggers.ts` under `/internal/triggers`, `routes/configure-bot.ts` under `/internal/menu` and `/internal/form`, `routes/menu.ts` under `/internal/menu`, `routes/forms.ts` under `/internal/form`, and `routes/regenerate.ts` directly under `/internal` (it declares its own `/menu`, `/form`, and `/scheduler` sub-paths), then starts the server via `@devvit/web/server`'s `createServer`/`getServerPort`.
 - The Google API key is stored in Redis under `google_api_key` via the "Configure bot" form (not a Devvit setting, because Devvit settings are readable by mods via the settings UI).
-- The Gemini model and thinking level live in Redis (`gemini_model`, `gemini_thinking_level`), set via "Configure bot"; `getGeminiChoice` in `src/server/configureBot.ts` reads them for every job (`routes/check-episodes.ts` and `routes/configure-bot.ts` both call it).
-- `routes/triggers.ts` wires the `AppInstall`/`AppUpgrade` triggers (`ensureCheckerScheduled('reset')`: cancel every existing checker job, schedule a fresh one) and the `PostSubmit`/`CommentSubmit` triggers (`ensureCheckerScheduled('heal')`). See "Scheduler jobs" for why. "Configure bot" and `routes/menu.ts`'s "Review pending post" also heal on every press; the same should apply once the remaining mod menu items exist.
+- The Gemini model and thinking level live in Redis (`gemini_model`, `gemini_thinking_level`), set via "Configure bot"; `getGeminiChoice` in `src/server/configureBot.ts` reads them for every Gemini-calling job (`routes/check-episodes.ts`, `routes/configure-bot.ts`, and `routes/regenerate.ts` all call it).
+- `routes/triggers.ts` wires the `AppInstall`/`AppUpgrade` triggers (`ensureCheckerScheduled('reset')`: cancel every existing checker job, schedule a fresh one) and the `PostSubmit`/`CommentSubmit` triggers (`ensureCheckerScheduled('heal')`). See "Scheduler jobs" for why. "Configure bot", `routes/menu.ts`'s "Review pending post", and "Regenerate discussion" also heal on every press; the same should apply once "Check for new videos" exists.
 - The Hono app itself is the entry point Devvit Web's `server.entry` in `devvit.json` points at — there is no required default export (unlike the removed Blocks `export default Devvit` contract).
 
 ---
@@ -333,9 +369,9 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | `google_api_key` | string | "Configure bot" form | `check_new_episodes`, `regenerate_discussion` | Google API key for both YouTube and Gemini |
 | `video_registry` | hash | `check_new_episodes` (step 4, 11), `post_pending_episode`, "Review pending post" form (Discard / Reject) | `check_new_episodes` (step 4), "Regenerate discussion" (`findVideoByPostId`) | Hash of videoId → `VideoRecord` JSON. Tracks every seen video with status `posted`, `pending`, `excluded`, `rejected`, `skipped`, or `private`. `posted` is terminal: `setVideoRecord` ignores non-`posted` writes over it and `deleteVideoRecord` refuses to remove it. |
 | `last_episode_sticky_slot` | string (`'1'`–`'2'`) | `managePins`, "Configure bot" form | `managePins`, "Configure bot" form | Sticky slot the bot uses for episode posts. Written by `managePins` after each successful pin, and directly by the "Configure bot" form. Defaults to `1` if absent. |
-| `gemini_model` | string | "Configure bot" form (deleted when "Recommended" is chosen) | `getGeminiChoice` (all Gemini jobs, both forms) | Advanced model override. Absent = `DEFAULT_GEMINI_MODEL`. |
-| `gemini_thinking_level` | string (`ThinkingLevel`) | "Configure bot" thinking-level form; deleted when the toggle is off or the model changes | `getGeminiChoice` | Advanced thinking override. Absent, or not accepted by the model = no `reasoning_effort`. |
-| `regenerate_draft:<userId>` | string (JSON `RegenerateJobData`), 1 h expiry | "Regenerate discussion" step 1 | "Regenerate discussion" step 2 (then deleted) | Carries step 1's answers to the thinking-level step. |
+| `gemini_model` | string | "Configure bot" form (deleted when "Recommended" is chosen) | `getGeminiChoice` in `configureBot.ts` (all Gemini jobs, both forms) | Advanced model override. Absent = `DEFAULT_GEMINI_MODEL`. |
+| `gemini_thinking_level` | string (`ThinkingLevel`) | "Configure bot" thinking-level form; deleted when the toggle is off or the model changes | `getGeminiChoice` in `configureBot.ts` | Advanced thinking override. Absent, or not accepted by the model = no `reasoning_effort`. |
+| `regenerate_draft:<userId>` | string (JSON `RegenerateDraft`), 1 h expiry | "Regenerate discussion" step 1 (`saveRegenerateDraft`) | "Regenerate discussion" step 2 (`loadRegenerateDraft`, then `clearRegenerateDraft`) | Carries step 1's answers (post/video/comment ID, prompt, model) to the thinking-level step. |
 | `configure_bot_draft:<userId>` | string (JSON `{ model }`), 10 min expiry | "Configure bot" step 1 (only when opening the thinking-level step) | "Configure bot" step 2 (then deleted) | Carries the model step 1 just resolved into step 2 — a form submit endpoint only receives its own fields. |
 | `episode_checker_job_id` | string | `ensureCheckerScheduled` | — | ID of the current checker cron job, for debugging. The scheduler's `listJobs()` is the source of truth. |
 | `episode_checker_verified_at` | string (epoch ms) | `ensureCheckerScheduled` | `ensureCheckerScheduled` | When the checker job was last verified; throttles 'heal' to once per 30 minutes. |
@@ -383,7 +419,7 @@ All log lines are prefixed with a bracketed module tag so they're filterable in 
 
 | Prefix | Source |
 |---|---|
-| `[bot]` | `src/server/routes/check-episodes.ts` and `src/server/checkerSchedule.ts` |
+| `[bot]` | `src/server/routes/check-episodes.ts`, `src/server/routes/regenerate.ts`, and `src/server/checkerSchedule.ts` |
 | `[llmClient]` | `src/server/llmClient.ts` |
 | `[postManager]` | `src/server/postManager.ts` |
 
@@ -404,7 +440,7 @@ Errors use `console.error`; informational output uses `console.log`; warnings us
 
 ### Change the Gemini model or request parameters
 
-Edit `generateEpisodePost` in `src/server/llmClient.ts`. The `model`, `max_tokens`, and `reasoning_effort` fields are in the JSON body. Model and thinking level come from Redis via `getGeminiChoice` in `src/server/configureBot.ts`, so mods change them in "Configure bot" without a code deploy. To refresh the models on offer, run `npm run models:sync` and commit `src/geminiModels.generated.ts`. Keep `GEMINI_DEADLINE_MS` comfortably under Devvit's 30 s HTTP limit.
+Edit `generateEpisodePost` in `src/server/llmClient.ts`. The `model`, `max_tokens`, and `reasoning_effort` fields are in the JSON body. Model and thinking level come from Redis via `getGeminiChoice` in `src/server/configureBot.ts`, so mods change them in "Configure bot" without a code deploy; both `check_new_episodes` and `regenerate_discussion` read it. To refresh the models on offer, run `npm run models:sync` and commit `src/geminiModels.generated.ts`. Keep `GEMINI_DEADLINE_MS` comfortably under Devvit's 30 s HTTP limit.
 
 ### Change the post body assembly order
 

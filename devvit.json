@@ -11,6 +11,21 @@
     "onPostSubmit": "/internal/triggers/on-post-submit",
     "onCommentSubmit": "/internal/triggers/on-comment-submit"
   },
+  "menu": {
+    "items": [
+      {
+        "label": "Regenerate discussion",
+        "description": "Rewrite this post's discussion comment with fresh Gemini output",
+        "forUserType": "moderator",
+        "location": "post",
+        "endpoint": "/internal/menu/regenerate-discussion"
+      }
+    ]
+  },
+  "forms": {
+    "regenerateStep1Form": "/internal/form/regenerate-step1",
+    "regenerateStep2Form": "/internal/form/regenerate-step2"
+  },
   "scheduler": {
     "tasks": {
       "check_new_episodes": {
