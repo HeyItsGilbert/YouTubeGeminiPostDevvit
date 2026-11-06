@@ -24,6 +24,20 @@
       }
     }
   },
+  "menu": {
+    "items": [
+      {
+        "label": "Review pending post",
+        "description": "Edit, then publish, discard, or reject the post waiting for mod approval.",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/review-pending-post"
+      }
+    ]
+  },
+  "forms": {
+    "reviewPendingPost": "/internal/form/review-pending-post-submit"
+  },
   "settings": {
     "subreddit": {
       "youtubePlaylistId": {
