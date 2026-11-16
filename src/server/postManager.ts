@@ -10,19 +10,33 @@ type PostId = `t3_${string}`;
 type CommentId = `t1_${string}`;
 
 type RedditClient = {
-  submitPost(options: { title: string; subredditName: string; url: string }): Promise<{
-    id: PostId;
-    addComment(options: { text: string }): Promise<{
-      id: CommentId;
-      distinguish(sticky?: boolean): Promise<unknown>;
-    }>;
-  }>;
+  submitPost(options: { title: string; subredditName: string; url: string }): Promise<{ id: PostId }>;
   getAppUser(): Promise<{ username: string } | undefined>;
+  getNewPosts(options: { subredditName: string; limit: number }): {
+    get(count: number): Promise<Array<{
+      id: PostId;
+      authorName: string;
+      createdAt: Date;
+      title: string;
+      url: string;
+    }>>;
+  };
   setUserFlair(options: { subredditName: string; username: string; text: string }): Promise<unknown>;
-  getCommentById(id: CommentId): Promise<{ edit(options: { text: string }): Promise<unknown> }>;
+  getCommentById(id: CommentId): Promise<{
+    edit(options: { text: string }): Promise<unknown>;
+    distinguish(sticky?: boolean): Promise<unknown>;
+  }>;
   getPostFlairTemplates(subredditName: string): Promise<Array<{ id: string; text?: string }>>;
   setPostFlair(options: { subredditName: string; postId: PostId; flairTemplateId: string }): Promise<unknown>;
-  getPostById(id: PostId): Promise<{ sticky(position: 1 | 2): Promise<unknown> }>;
+  getPostById(id: PostId): Promise<RedditPost>;
+};
+
+type RedditPost = {
+  addComment(options: { text: string }): Promise<{ id?: CommentId } | undefined>;
+  sticky(position: 1 | 2): Promise<unknown>;
+  comments: {
+    get(count: number): Promise<Array<{ id: CommentId; authorName: string; body: string }>>;
+  };
 };
 
 type RedisClient = {
@@ -38,28 +52,105 @@ export interface EpisodePost {
 
 // ----- Post creation --------------------------------------------------------
 
+const RECONCILIATION_SEARCH_LIMIT = 100;
+
+/** Submit the immutable Reddit link post and return its accepted ID. */
+export async function createEpisodeLinkPost(
+  reddit: RedditClient,
+  subredditName: string,
+  title: string,
+  url: string,
+): Promise<PostId> {
+  const post = await reddit.submitPost({ title, subredditName, url });
+  return post.id;
+}
+
+/** Fetch the Episode Post before recording a discussion-comment submission intent. */
+export async function getEpisodePost(reddit: RedditClient, postId: PostId): Promise<RedditPost> {
+  return reddit.getPostById(postId);
+}
+
+/** Submit a generated discussion comment to an already-fetched Episode Post. */
+export async function submitEpisodeDiscussionComment(post: RedditPost, body: string): Promise<CommentId | null> {
+  const comment = await post.addComment({ text: body });
+  return comment?.id ?? null;
+}
+
+/** Add the generated discussion as a top-level comment and return its accepted ID. */
+export async function createEpisodeDiscussionComment(
+  reddit: RedditClient,
+  postId: PostId,
+  body: string,
+): Promise<CommentId> {
+  const commentId = await submitEpisodeDiscussionComment(await getEpisodePost(reddit, postId), body);
+  if (!commentId) throw new Error('Reddit did not accept the discussion comment.');
+  return commentId;
+}
+
+/** Distinguish and sticky the persisted Discussion Comment. */
+export async function distinguishEpisodeDiscussionComment(
+  reddit: RedditClient,
+  commentId: CommentId,
+): Promise<void> {
+  const comment = await reddit.getCommentById(commentId);
+  await comment.distinguish(true);
+}
+
+/** Locate a uniquely matching accepted link post without submitting another. */
+export async function findEpisodeLinkPost(
+  reddit: RedditClient,
+  subredditName: string,
+  title: string,
+  url: string,
+  generatedAt: string,
+): Promise<PostId | null> {
+  const generatedAtMs = Date.parse(generatedAt);
+  if (Number.isNaN(generatedAtMs)) return null;
+  const appUser = await reddit.getAppUser();
+  if (!appUser) return null;
+  const posts = await reddit.getNewPosts({ subredditName, limit: RECONCILIATION_SEARCH_LIMIT })
+    .get(RECONCILIATION_SEARCH_LIMIT);
+  const matches = posts.filter((post) => (
+    post.authorName === appUser.username
+    && post.title === title
+    && post.url === url
+    && post.createdAt.getTime() >= generatedAtMs
+  ));
+  return matches.length === 1 ? matches[0]!.id : null;
+}
+
+/** Locate a uniquely matching accepted Discussion Comment without adding another. */
+export async function findEpisodeDiscussionComment(
+  reddit: RedditClient,
+  postId: PostId,
+  body: string,
+): Promise<CommentId | null> {
+  const appUser = await reddit.getAppUser();
+  if (!appUser) return null;
+  const post = await reddit.getPostById(postId);
+  const comments = await post.comments.get(RECONCILIATION_SEARCH_LIMIT);
+  const matches = comments.filter((comment) => (
+    comment.authorName === appUser.username && comment.body === body
+  ));
+  return matches.length === 1 ? matches[0]!.id : null;
+}
+
 /**
- * Submit a link post pointing at the YouTube video — this gets Reddit's
- * native thumbnail/preview card, which a self post cannot. Reddit's post
- * model is mutually exclusive between `url` (link posts) and `text`/
- * `richtext` (self posts), so the generated discussion body is posted
- * separately as a distinguished, stickied top-level comment.
+ * Submit a link post pointing at the YouTube video and create its distinguished,
+ * stickied Discussion Comment. Immediate publication has no durable state between
+ * these operations; Pending Posts call the individual helpers to persist IDs.
  */
 export async function createEpisodePost(
   reddit: RedditClient,
   subredditName: string,
   title: string,
   url: string,
-  body: string
+  body: string,
 ): Promise<EpisodePost> {
-  const post = await reddit.submitPost({
-    title,
-    subredditName,
-    url,
-  });
-  const comment = await post.addComment({ text: body });
-  await comment.distinguish(true);
-  return { postId: post.id, commentId: comment.id };
+  const postId = await createEpisodeLinkPost(reddit, subredditName, title, url);
+  const commentId = await createEpisodeDiscussionComment(reddit, postId, body);
+  await distinguishEpisodeDiscussionComment(reddit, commentId);
+  return { postId, commentId };
 }
 
 // ----- Bot identity ---------------------------------------------------------

@@ -52,13 +52,31 @@ src/
                     Stores status (posted/pending/excluded/rejected/skipped/private) and
                     postId/commentId per video ID. Posted records are terminal: never
                     overwritten (except by a forced repost) or deleted.
+    pendingPost.ts  Pending Post helpers shared by check-episodes.ts, the
+                    post_pending_episode job, and the "Review pending post" menu +
+                    form routes: target-bound enqueue/timer helpers, bounded
+                    owner-token publication leases, durable pre-Reddit-create intent
+                    markers with safe reconciliation, atomic registry transitions,
+                    review-action parsing, and the review form builder.
+    notifications.ts sendFailureNotification + mod-inbox fallback + FAILURE_HELP:
+                    reports failures to notificationMods, a triggering mod, or
+                    the moderator inbox when an unattended auto-approval fails.
     routes/
       check-episodes.ts  `check_new_episodes` scheduler task: the full recurring
                     video-check pipeline.
       configure-bot.ts    "Configure bot" subreddit menu item and its two-step
                     form chain (API key/pin slot/model, then thinking level).
-      pending-post.ts    `post_pending_episode` scheduler task — declared, stub only;
-                    full publish/discard/reject logic lands with "Review pending post".
+      pending-post.ts    `post_pending_episode` scheduler task: target-bound,
+                          resumable publication of a mod-approved or auto-approved
+                          Pending Post. It records an intent before every Reddit create,
+                          persists each accepted ID before the next operation, and
+                          atomically marks the registry posted.
+      menu.ts       Subreddit "…" menu items. "Review pending post" opens the
+                    review form (or toasts if nothing is pending); re-verifies the
+                    checker cron on every press.
+      forms.ts      Form submit handlers. "Review pending post" resolves Discard
+                    or Reject with the registry atomically, or writes edits and
+                    triggers `post_pending_episode` with the exact queue target.
       regenerate.ts      `regenerate_discussion` scheduler task — declared, stub only;
                     full logic lands with "Regenerate discussion".
       triggers.ts   onAppInstall/onAppUpgrade/onPostSubmit/onCommentSubmit — all four
@@ -84,12 +102,13 @@ preview-site/
 ```
 
 **Note on current build status:** The `check_new_episodes` pipeline (the recurring
-video-check job) and "Configure bot" are wired up on Devvit Web. "Check for new
-videos", "Review pending post", and "Regenerate discussion" (menu items, forms, and
-the `post_pending_episode`/`regenerate_discussion` job logic) still only exist in the
-sections below as the target design — they land in later tickets on the same
-migration. Their scheduler tasks are declared in `devvit.json` with stub route
-handlers so Devvit Web's "every job must be declared" requirement is met.
+video-check job), "Configure bot", and "Review pending post" (menu item, form, and
+the `post_pending_episode` job) are wired up on Devvit Web. "Check for new videos"
+and "Regenerate discussion" (menu items, forms, and the `regenerate_discussion` job
+logic) still only exist in the sections below as the target design — they land in
+later tickets on the same migration. `regenerate_discussion`'s scheduler task is
+declared in `devvit.json` with a stub route handler so Devvit Web's "every job
+must be declared" requirement is met.
 
 ---
 
@@ -279,11 +298,11 @@ This is the **OpenAI-compatible** endpoint, not the native Gemini endpoint (`/v1
 
 **Responsibilities (split between the manifest and the Hono entry point):**
 
-- `devvit.json` declares the `server` entry, the `reddit`/`redis`/`http` permissions and the two HTTP domains, all installation-scoped settings (see Settings section below), the "Configure bot" menu item and its two forms, all three scheduler task names with their endpoints, and the four triggers.
-- `src/server/index.ts` builds the Hono app, mounts `routes/check-episodes.ts`, `routes/pending-post.ts`, `routes/regenerate.ts` under `/internal/scheduler`, `routes/triggers.ts` under `/internal/triggers`, and `routes/configure-bot.ts` under `/internal/menu` and `/internal/form`, then starts the server via `@devvit/web/server`'s `createServer`/`getServerPort`.
+- `devvit.json` declares the `server` entry, the `reddit`/`redis`/`http` permissions and the two HTTP domains, all installation-scoped settings (see Settings section below), the "Configure bot" menu item and its two forms, the "Review pending post" menu item and its form's submit endpoint, all three scheduler task names with their endpoints, and the four triggers.
+- `src/server/index.ts` builds the Hono app, mounts `routes/check-episodes.ts`, `routes/pending-post.ts`, `routes/regenerate.ts` under `/internal/scheduler`, `routes/triggers.ts` under `/internal/triggers`, `routes/configure-bot.ts` under `/internal/menu` and `/internal/form`, `routes/menu.ts` under `/internal/menu`, and `routes/forms.ts` under `/internal/form`, then starts the server via `@devvit/web/server`'s `createServer`/`getServerPort`.
 - The Google API key is stored in Redis under `google_api_key` via the "Configure bot" form (not a Devvit setting, because Devvit settings are readable by mods via the settings UI).
 - The Gemini model and thinking level live in Redis (`gemini_model`, `gemini_thinking_level`), set via "Configure bot"; `getGeminiChoice` in `src/server/configureBot.ts` reads them for every job (`routes/check-episodes.ts` and `routes/configure-bot.ts` both call it).
-- `routes/triggers.ts` wires the `AppInstall`/`AppUpgrade` triggers (`ensureCheckerScheduled('reset')`: cancel every existing checker job, schedule a fresh one) and the `PostSubmit`/`CommentSubmit` triggers (`ensureCheckerScheduled('heal')`). See "Scheduler jobs" for why. "Configure bot" also heals on every press; the same should apply once the remaining mod menu items exist.
+- `routes/triggers.ts` wires the `AppInstall` trigger to `ensureCheckerScheduled('reset')` and, on `AppUpgrade`, first migrates the one stored legacy targetless auto-approval timer (if any) to a target-bound job before the same checker reset. `PostSubmit`/`CommentSubmit` call `ensureCheckerScheduled('heal')`. See "Scheduler jobs" for why. "Configure bot" and `routes/menu.ts`'s "Review pending post" also heal on every press; the same should apply once the remaining mod menu items exist.
 - The Hono app itself is the entry point Devvit Web's `server.entry` in `devvit.json` points at — there is no required default export (unlike the removed Blocks `export default Devvit` contract).
 
 ---
@@ -303,8 +322,8 @@ All settings are declared under `settings.subreddit` in `devvit.json` (Devvit We
 | `appendText` | paragraph | No | `''` | Appended to final post body |
 | `flairName` | string | No | `''` | Exact post flair template name (case-insensitive match) |
 | `notificationMods` | string | No | `''` | Comma-separated Reddit usernames to notify when a post is queued (e.g. `"alice, bob"`). Each user receives a PM. When blank, notification goes to the general mod inbox via `createModInboxConversation`. Only applies when `requireModApproval` is true. |
-| `requireModApproval` | boolean | No | `false` | When true, generated posts are stored in Redis, the video is recorded as `pending`, and a notification is sent instead of posting immediately. While a post is pending, checks skip generation entirely. Mods use the "Review pending post" form to publish, discard, or reject. |
-| `autoApproveWindowMinutes` | number | No | `0` | Only applies when `requireModApproval` is true. When > 0, schedules a `post_pending_episode` job to auto-publish after this many minutes if no mod acts first. Set to `0` for indefinite hold. |
+| `requireModApproval` | boolean | No | `false` | When true, generated posts are stored in Redis, the video is recorded as `pending`, and a notification is sent instead of posting immediately. While a post is pending, checks skip generation entirely. Mods use the "Review pending post" form to publish, discard, or reject; once Reddit accepts the link post, only Publish can finish reconciliation. |
+| `autoApproveWindowMinutes` | number | No | `0` | Only applies when `requireModApproval` is true. When > 0, schedules a target-bound `post_pending_episode` job to auto-publish after this many minutes if no mod acts first. Set to `0` for indefinite hold. |
 
 The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored directly in Redis via the "Configure bot" mod menu form, keeping it out of the visible Devvit settings UI.
 
@@ -315,7 +334,7 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | Key | Type | Written by | Read by | Purpose |
 |---|---|---|---|---|
 | `google_api_key` | string | "Configure bot" form | `check_new_episodes`, `regenerate_discussion` | Google API key for both YouTube and Gemini |
-| `video_registry` | hash | `check_new_episodes` (step 4, 11), `post_pending_episode`, "Review pending post" form (Discard / Reject) | `check_new_episodes` (step 4), "Regenerate discussion" (`findVideoByPostId`) | Hash of videoId → `VideoRecord` JSON. Tracks every seen video with status `posted`, `pending`, `excluded`, `rejected`, `skipped`, or `private`. `posted` is terminal: `setVideoRecord` ignores non-`posted` writes over it and `deleteVideoRecord` refuses to remove it. |
+| `video_registry` | hash | `check_new_episodes` (step 4, 11), `post_pending_episode`, "Review pending post" form | `check_new_episodes` (step 4), "Regenerate discussion" (`findVideoByPostId`) | Hash of videoId → `VideoRecord` JSON. Queue creation, Discard/Reject resolution, and publication completion transition this hash atomically with `pending_post`. Tracks every seen video with status `posted`, `pending`, `excluded`, `rejected`, `skipped`, or `private`. `posted` is terminal. |
 | `last_episode_sticky_slot` | string (`'1'`–`'2'`) | `managePins`, "Configure bot" form | `managePins`, "Configure bot" form | Sticky slot the bot uses for episode posts. Written by `managePins` after each successful pin, and directly by the "Configure bot" form. Defaults to `1` if absent. |
 | `gemini_model` | string | "Configure bot" form (deleted when "Recommended" is chosen) | `getGeminiChoice` (all Gemini jobs, both forms) | Advanced model override. Absent = `DEFAULT_GEMINI_MODEL`. |
 | `gemini_thinking_level` | string (`ThinkingLevel`) | "Configure bot" thinking-level form; deleted when the toggle is off or the model changes | `getGeminiChoice` | Advanced thinking override. Absent, or not accepted by the model = no `reasoning_effort`. |
@@ -324,9 +343,9 @@ The Google API key (`google_api_key`) is **not** a Devvit setting. It is stored 
 | `configure_bot_draft:<userId>` | string (JSON `{ model, revision }`), 10 min expiry | "Configure bot" step 1 (only when opening the thinking-level step) | "Configure bot" step 2 (then deleted) | Carries the resolved model and configuration revision to step 2; an outdated form cannot overwrite newer configuration. |
 | `episode_checker_job_id` | string | `ensureCheckerScheduled` | — | ID of the current checker cron job, for debugging. The scheduler's `listJobs()` is the source of truth. |
 | `episode_checker_verified_at` | string (epoch ms) | `ensureCheckerScheduled` | `ensureCheckerScheduled` | When the checker job was last verified; throttles 'heal' to once per 30 minutes. |
-| `check_triggered_by` | string | "Check for new videos" menu item / playtest form | `check_new_episodes` (manual-run outcome PMs and error handler), `post_pending_episode` error handler (when no `triggeredBy` job data) | Username of the mod who manually triggered; used to PM outcomes and failures |
-| `pending_post` | string (JSON) | `check_new_episodes` (approval gate path), "Review pending post" form (Publish writes edits back) | `check_new_episodes` (skips generation while set), `post_pending_episode`, "Review pending post" menu item and form | Serialised `PendingPost` object holding generated title, body, url, videoId, videoTitle, and generatedAt timestamp. Deleted when the post is published, discarded, or rejected. |
-| `pending_post_job_id` | string | `check_new_episodes` (when `autoApproveWindowMinutes > 0`) | "Review pending post" form | Scheduler job ID for the auto-approve timer. Cancelled and deleted when a mod acts first. |
+| `check_triggered_by` | string | "Check for new videos" menu item / playtest form | `check_new_episodes` (manual-run outcome PMs and error handler) | Username of the mod who manually triggered a video check; never used by `post_pending_episode`, whose failure recipient is only its own job data |
+| `pending_post` | string (JSON) | `check_new_episodes` (approval gate path), "Review pending post" form (edits), `post_pending_episode` (lease/progress) | `check_new_episodes` (skips generation while set), `post_pending_episode`, "Review pending post" menu and form | Serialised `PendingPost` with title, body, video identity, accepted `postId`/`commentId`, a pre-create `publicationPhase`, and a 5-minute owner-token publication lease. Every job/form identifies the exact video ID and generation timestamp. A retry reconciles an uncertain Reddit create before it can create another object; after a link post exists, its title is immutable and only the Discussion Comment is editable. |
+| `pending_post_job_id` | string | `check_new_episodes` (when `autoApproveWindowMinutes > 0`), AppUpgrade legacy-timer migration | `post_pending_episode`, "Review pending post" form, AppUpgrade | Scheduler job ID bound to the exact pending target. Upgrade replaces only the stored targetless legacy auto-approval job, retaining its due time; pending/registry state is committed before the external timer is cancelled, and stale jobs no-op. |
 
 Keys no longer written (may linger on older installs, safe to delete): `last_episode_guid`, `last_episode_post_id`, `last_episode_comment_id`, `force_repost`, `regenerate_triggered_by`.
 
@@ -339,10 +358,11 @@ Keys no longer written (may linger on older installs, safe to delete): `last_epi
 | Job name | Schedule | Trigger |
 |---|---|---|
 | `check_new_episodes` | `*/30 * * * *` (cron) | Kept alive by `ensureCheckerScheduled` (see below). Also triggered immediately by "Check for new videos" via `runAt: new Date()` with job data `{ forceRepost, manual: true }` (`forceRepost` is `true` only from the playtest form). A manual run always ends visibly for the mod: a new post, a failure PM, or a PM saying why nothing was posted (missing settings, no videos, nothing new, post awaiting approval). Cron runs stay silent in those cases. |
-| `post_pending_episode` | No fixed schedule | Triggered immediately by the "Review pending post" form's Publish action with job data `{ triggeredBy }`, so a failure PMs the mod who pressed it. Also scheduled at `now + autoApproveWindowMinutes` by `check_new_episodes` when `requireModApproval` is true and a window is configured. |
+| `post_pending_episode` | No fixed schedule | Triggered immediately by the "Review pending post" form with job data `{ videoId, generatedAt, triggeredBy? }`; auto-approve jobs carry `{ videoId, generatedAt }`. The task no-ops when that exact Pending Post is no longer queued, so delayed jobs cannot publish a replacement. A manual Publish schedules its target-bound job before retiring its fallback timer. |
 | `regenerate_discussion` | No fixed schedule | Only triggered by the "Regenerate discussion" post menu forms via `runAt: new Date()`, with job data `{ videoId, commentId, systemPrompt, model, thinkingLevel, triggeredBy }`. |
 
-All three job names are declared under `scheduler.tasks` in `devvit.json`, each with its own endpoint (Devvit Web requires every scheduler job — including one-offs — to be declared). `check_new_episodes` is declared **without** a `cron` field: it is still created and kept alive at runtime by `ensureCheckerScheduled` in `src/server/checkerSchedule.ts`, tagged as a `USER`-managed job (not a `DEVVIT_JSON`-managed one), so Devvit never auto-cancels or reschedules it out from under the app. On `AppInstall`/`AppUpgrade` it runs in `'reset'` mode: cancel every `check_new_episodes` job and schedule a fresh one, so a job from an older version is replaced. Those events alone proved unreliable — a playtest install was found with no job, no stored job ID, and no trigger log across six version changes — so `'heal'` mode also runs on `PostSubmit`/`CommentSubmit` (and should run on every mod menu press, once menu items exist). Heal is throttled to once per 30 minutes via `episode_checker_verified_at`, schedules the job only if `listJobs([ScheduledActionManager.USER])` has none, and cancels duplicates left by concurrent heals. It never throws.
+All three job names are declared under `scheduler.tasks` in `devvit.json`, each with its own endpoint (Devvit Web requires every scheduler job — including one-offs — to be declared). `check_new_episodes` is declared **without** a `cron` field: it is still created and kept alive at runtime by `ensureCheckerScheduled` in `src/server/checkerSchedule.ts`, tagged as a `USER`-managed job (not a `DEVVIT_JSON`-managed one), so Devvit never auto-cancels or reschedules it out from under the app. On `AppInstall` it runs in `'reset'` mode: cancel every `check_new_episodes` job and schedule a fresh one, so a job from an older version is replaced. On `AppUpgrade`, the app first replaces the one Redis-bound legacy targetless `post_pending_episode` timer with an equally timed target-bound job, then performs that checker reset. Those events alone proved unreliable — a playtest install was found with no job, no stored job ID, and no trigger log across six version changes — so `'heal'` mode also runs on `PostSubmit`/`CommentSubmit` (and should run on every mod menu press, once menu items exist). Heal is throttled to once per 30 minutes via `episode_checker_verified_at`, schedules the job only if `listJobs([ScheduledActionManager.USER])` has none, and cancels duplicates left by concurrent heals. It never throws.
+
 
 ---
 

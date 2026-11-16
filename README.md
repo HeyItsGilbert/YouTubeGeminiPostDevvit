@@ -18,8 +18,8 @@ Issues & Requests: [HeyItsGilbert/YouTubeGeminiPostDevvit](https://github.com/He
 - **Calls Gemini** with video metadata and a mod-supplied system prompt to generate a discussion post
 - **Submits a link post** pointing directly at the video — gets Reddit's native thumbnail preview card — and posts the generated discussion text as a distinguished, stickied top comment
 - **Rotates the pin** — pins the new post and unpins the previous one
-- **Notifies the triggering mod by PM** if a manually triggered action fails
-- **Optional mod approval gate** — hold generated posts for review before publishing, with an optional auto-approve timer
+- **Notifies the triggering mod by PM** if a manually triggered action fails; unattended auto-approval failures go to the moderator inbox
+- **Optional mod approval gate** — hold generated posts for review before publishing, with a target-bound auto-approve timer and safe retry after a partial Reddit publication
 
 Moderators get three items in the subreddit's **"…"** menu (next to Mod Tools):
 
@@ -30,14 +30,16 @@ Moderators get three items in the subreddit's **"…"** menu (next to Mod Tools)
 - **Check for new videos** — run a check immediately.
 - **Review pending post** — when mod approval is enabled, edit the pending post,
   then publish it, discard it (the next check treats the video as unseen), or
-  reject the video (never post it).
+  reject the video (never post it). If another moderator resolves or replaces
+  the post while the form is open, reopen the menu to review the current post.
+  If Reddit has already accepted the link post, use **Publish** to finish it:
+  the title is locked, but the discussion comment can still be edited.
 
 On any episode post, the post menu offers **Regenerate discussion**: rewrite the
 discussion comment with fresh Gemini output, optionally with a different model,
-thinking level, or edited system prompt for that one regeneration. If any manual action fails,
-the triggering mod receives a Reddit PM with the error details. Scheduled
-(cron) runs are self-healing — state is only persisted on success, so the next
-30-minute tick retries automatically.
+thinking level, or edited system prompt for that one regeneration. A retry of a
+partially published pending post resumes its existing Reddit objects rather than
+submitting another link post.
 
 ## API Key
 

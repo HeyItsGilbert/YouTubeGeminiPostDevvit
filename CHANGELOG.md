@@ -12,16 +12,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Migrated the app's entry point from Devvit Blocks to Devvit Web: `devvit.json`
   now declares a `server` entry (Hono, bundled by Vite via `@devvit/start`)
   instead of `blocks`. The recurring video-check pipeline
-  (`check_new_episodes`) and "Configure bot" (API key, pin slot, and the
-  Advanced Gemini model/thinking-level overrides) are fully ported and run
-  exactly as before; "Check for new videos", "Review pending post", and
-  "Regenerate discussion" mod menu items are not yet re-implemented on the
-  new server (tracked in follow-up tickets). Settings, Redis keys, and the
-  video registry are unchanged.
+  (`check_new_episodes`), "Configure bot" (API key, pin slot, and the
+  Advanced Gemini model/thinking-level overrides), and the mod-approval
+  gate's **Review pending post** menu item/form (publish, discard, reject,
+  and auto-approve via `post_pending_episode`) are fully ported and run
+  exactly as before; "Check for new videos" and "Regenerate discussion"
+  are not yet re-implemented on the new server (tracked in follow-up
+  tickets). Settings and Redis key names are unchanged.
+- Hardened Pending Post publication: a bounded owner-token lease recovers after
+  a terminated job; queue, registry, and timer ownership changes are atomic;
+  scheduled jobs are bound to their video/generation target; and each accepted
+  Reddit ID is persisted before the next creation step. Retries reuse existing
+  Reddit objects, keep link-post titles immutable, and update the Discussion
+  Comment. Unattended auto-approval failures now notify the moderator inbox.
 - Vitest is now the project's test runner (`npm test`), with unit tests for
-  the checker-scheduling reset/heal logic, the video registry's
-  terminal-`posted` guard, the "Configure bot" form/decision builders, and
-  the shared pure utility functions.
+  the checker-scheduling reset/heal logic, the video registry's terminal-
+  `posted` guard, the "Configure bot" form/decision builders, the shared pure
+  utility functions, Pending Post lease/atomic-resolution/retry helpers and
+  publisher route, and the shared failure-notification helpers.
 
 ## [0.3.0] - 2026-10-14
 
