@@ -24,6 +24,7 @@ import {
   configureBotDraftKey,
   decideConfigureBotSubmission,
   decideThinkingLevelSubmission,
+  decodeThinkingLevelSelection,
   getGeminiChoice,
   type ConfigureBotSubmission,
 } from '../configureBot.js';
@@ -56,11 +57,16 @@ configureBot.post('/menu/configure-bot', async (c) => {
 
 configureBot.post('/form/configure-bot', async (c) => {
   const values = await c.req.json<ConfigureBotSubmission>();
+  const draftKey = configureBotDraftKey(context.userId);
+  const transaction = await redis.watch(
+    draftKey,
+    REDIS_KEY_CONFIGURE_BOT_REVISION,
+    REDIS_KEY_GEMINI_MODEL,
+    REDIS_KEY_THINKING_LEVEL
+  );
   const previous = await getGeminiChoice(redis);
   const decision = decideConfigureBotSubmission(values, previous);
-  const draftKey = configureBotDraftKey(context.userId);
   const revision = randomUUID();
-  const transaction = await redis.watch(draftKey);
 
   await transaction.multi();
   if (decision.apiKeyToSet) {
@@ -97,13 +103,20 @@ configureBot.post('/form/configure-bot', async (c) => {
   return c.json<UiResponse>({
     showForm: {
       name: 'configureBotThinkingLevel',
-      form: buildThinkingLevelForm({ model: decision.model, thinkingLevel: decision.thinkingFormDefault }),
+      form: buildThinkingLevelForm({ model: decision.model, thinkingLevel: decision.thinkingFormDefault, revision }),
     },
   });
 });
 
 configureBot.post('/form/configure-bot-thinking-level', async (c) => {
   const values = await c.req.json<ThinkingLevelSubmission>();
+  const selection = decodeThinkingLevelSelection(values.thinkingLevel);
+  if (!selection) {
+    return c.json<UiResponse>({
+      showToast: 'This form is invalid. Open "Configure bot" again to choose a thinking level.',
+    });
+  }
+
   const draftKey = configureBotDraftKey(context.userId);
   const transaction = await redis.watch(draftKey, REDIS_KEY_CONFIGURE_BOT_REVISION);
   const [draftJson, revision] = await Promise.all([redis.get(draftKey), redis.get(REDIS_KEY_CONFIGURE_BOT_REVISION)]);
@@ -116,14 +129,14 @@ configureBot.post('/form/configure-bot-thinking-level', async (c) => {
   }
 
   const draft = JSON.parse(draftJson) as { model: string; revision?: string };
-  if (!draft.revision || draft.revision !== revision) {
+  if (!draft.revision || selection.revision !== draft.revision || draft.revision !== revision) {
     await transaction.unwatch();
     return c.json<UiResponse>({
       showToast: 'Configuration changed while this form was open. Open "Configure bot" and try again.',
     });
   }
 
-  const decision = decideThinkingLevelSubmission(draft.model, values.thinkingLevel);
+  const decision = decideThinkingLevelSubmission(draft.model, [selection.level]);
   await transaction.multi();
   if (decision.level) {
     await transaction.set(REDIS_KEY_THINKING_LEVEL, decision.level);

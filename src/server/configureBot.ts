@@ -116,17 +116,34 @@ export function customizeThinkingField(defaultValue: boolean): FormField {
   };
 }
 
-export function thinkingLevelSelectField(model: string, current: ThinkingLevel | undefined): FormField {
+export function encodeThinkingLevelSelection(revision: string, level: string): string {
+  return `${revision}:${level}`;
+}
+
+export function decodeThinkingLevelSelection(values: string[] | undefined): { revision: string; level: string } | undefined {
+  const value = firstSelectValue(values);
+  const separator = value?.indexOf(':') ?? -1;
+  if (separator <= 0) {
+    return undefined;
+  }
+  return { revision: value!.slice(0, separator), level: value!.slice(separator + 1) };
+}
+
+export function thinkingLevelSelectField(
+  model: string,
+  current: ThinkingLevel | undefined,
+  revision: string
+): FormField {
   return {
     type: 'select',
     name: 'thinkingLevel',
     label: 'Thinking level',
     helpText: 'More thinking can improve the discussion but is slower; Gemini has 20 seconds to answer.',
     options: [
-      { label: 'Model default (recommended)', value: DEFAULT_CHOICE },
-      ...thinkingLevelsFor(model).map(level => ({ label: describeThinkingLevel(level), value: level })),
+      { label: 'Model default (recommended)', value: encodeThinkingLevelSelection(revision, DEFAULT_CHOICE) },
+      ...thinkingLevelsFor(model).map(level => ({ label: describeThinkingLevel(level), value: encodeThinkingLevelSelection(revision, level) })),
     ],
-    defaultValue: [current ?? DEFAULT_CHOICE],
+    defaultValue: [encodeThinkingLevelSelection(revision, current ?? DEFAULT_CHOICE)],
     required: true,
   };
 }
@@ -181,13 +198,14 @@ export function buildConfigureBotForm(data: ConfigureBotFormData): Form {
 export interface ThinkingLevelFormData {
   model: string;
   thinkingLevel: ThinkingLevel | undefined;
+  revision: string;
 }
 
 export function buildThinkingLevelForm(data: ThinkingLevelFormData): Form {
   return {
     title: 'Configure bot: thinking level',
     description: `Levels ${data.model} accepts. Saved for every check; "Regenerate discussion" can override it per run.`,
-    fields: [thinkingLevelSelectField(data.model, data.thinkingLevel)],
+    fields: [thinkingLevelSelectField(data.model, data.thinkingLevel, data.revision)],
     acceptLabel: 'Save',
     cancelLabel: 'Keep current',
   };

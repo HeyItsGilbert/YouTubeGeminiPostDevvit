@@ -5,6 +5,7 @@ import {
   buildThinkingLevelForm,
   configureBotDraftKey,
   customizeThinkingField,
+  decodeThinkingLevelSelection,
   decideConfigureBotSubmission,
   decideThinkingLevelSubmission,
   firstSelectValue,
@@ -81,18 +82,33 @@ describe('customizeThinkingField', () => {
 });
 
 describe('thinkingLevelSelectField', () => {
-  it('offers Model default plus every level the given model accepts', () => {
-    const field = thinkingLevelSelectField('gemini-pro-latest', undefined) as {
+  it('offers Model default plus every level the given model accepts, bound to the form revision', () => {
+    const field = thinkingLevelSelectField('gemini-pro-latest', undefined, 'revision-a') as {
       options: { label: string; value: string }[];
       defaultValue: string[];
     };
-    expect(field.options.map(o => o.value)).toEqual([DEFAULT_CHOICE, 'low', 'medium', 'high']);
-    expect(field.defaultValue).toEqual([DEFAULT_CHOICE]);
+    expect(field.options.map(o => o.value)).toEqual([
+      'revision-a:default',
+      'revision-a:low',
+      'revision-a:medium',
+      'revision-a:high',
+    ]);
+    expect(field.defaultValue).toEqual(['revision-a:default']);
   });
 
   it('preselects the current level when one is given', () => {
-    const field = thinkingLevelSelectField('gemini-pro-latest', 'medium') as { defaultValue: string[] };
-    expect(field.defaultValue).toEqual(['medium']);
+    const field = thinkingLevelSelectField('gemini-pro-latest', 'medium', 'revision-a') as { defaultValue: string[] };
+    expect(field.defaultValue).toEqual(['revision-a:medium']);
+  });
+});
+
+describe('decodeThinkingLevelSelection', () => {
+  it('returns the revision and selected level', () => {
+    expect(decodeThinkingLevelSelection(['revision-a:high'])).toEqual({ revision: 'revision-a', level: 'high' });
+  });
+
+  it('rejects a selection without its form revision', () => {
+    expect(decodeThinkingLevelSelection(['high'])).toBeUndefined();
   });
 });
 
@@ -119,7 +135,7 @@ describe('buildConfigureBotForm', () => {
 
 describe('buildThinkingLevelForm', () => {
   it('names the model in the description and offers that model\'s level field', () => {
-    const form = buildThinkingLevelForm({ model: 'gemini-pro-latest', thinkingLevel: undefined });
+    const form = buildThinkingLevelForm({ model: 'gemini-pro-latest', thinkingLevel: undefined, revision: 'revision-a' });
     expect(form.description).toContain('gemini-pro-latest');
     expect(form.fields).toHaveLength(1);
     expect(form.fields[0]).toEqual(expect.objectContaining({ name: 'thinkingLevel' }));
