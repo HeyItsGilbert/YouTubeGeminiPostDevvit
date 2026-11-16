@@ -92,6 +92,21 @@
       }
     }
   },
+  "menu": {
+    "items": [
+      {
+        "label": "Configure bot",
+        "description": "API key, pin slot, and Gemini model.",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/configure-bot"
+      }
+    ]
+  },
+  "forms": {
+    "configureBot": "/internal/form/configure-bot",
+    "configureBotThinkingLevel": "/internal/form/configure-bot-thinking-level"
+  },
   "permissions": {
     "reddit": {
       "enable": true

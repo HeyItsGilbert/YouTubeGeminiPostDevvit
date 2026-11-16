@@ -12,14 +12,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Migrated the app's entry point from Devvit Blocks to Devvit Web: `devvit.json`
   now declares a `server` entry (Hono, bundled by Vite via `@devvit/start`)
   instead of `blocks`. The recurring video-check pipeline
-  (`check_new_episodes`) is fully ported and runs exactly as before; the
-  "Configure bot", "Check for new videos", "Review pending post", and
+  (`check_new_episodes`) and "Configure bot" (API key, pin slot, and the
+  Advanced Gemini model/thinking-level overrides) are fully ported and run
+  exactly as before; "Check for new videos", "Review pending post", and
   "Regenerate discussion" mod menu items are not yet re-implemented on the
   new server (tracked in follow-up tickets). Settings, Redis keys, and the
   video registry are unchanged.
 - Vitest is now the project's test runner (`npm test`), with unit tests for
   the checker-scheduling reset/heal logic, the video registry's
-  terminal-`posted` guard, and the shared pure utility functions.
+  terminal-`posted` guard, the "Configure bot" form/decision builders, and
+  the shared pure utility functions.
 
 ## [0.3.0] - 2026-10-14
 

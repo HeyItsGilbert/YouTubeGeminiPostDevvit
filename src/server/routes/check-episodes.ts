@@ -13,11 +13,10 @@ import type { RedditClient } from '@devvit/reddit';
 
 import { fetchPlaylistVideos } from '../episodeChecker.js';
 import { generateEpisodePost } from '../llmClient.js';
-import { DEFAULT_GEMINI_MODEL, resolveThinkingLevel } from '../../geminiModels.js';
-import type { ThinkingLevel } from '../../types.js';
 import { createEpisodePost, applyBotFlair, applyFlair, managePins } from '../postManager.js';
 import { getAllVideoRecords, setVideoRecord } from '../videoRegistry.js';
 import { assemblePostBody, applyPlaceholders, matchesExclusionFilter, isPrivateVideo } from '../../postUtils.js';
+import { REDIS_KEY_GOOGLE_API_KEY, getGeminiChoice } from '../configureBot.js';
 
 export const checkEpisodes = new Hono();
 
@@ -25,11 +24,8 @@ export const checkEpisodes = new Hono();
 // Redis key constants
 // ---------------------------------------------------------------------------
 
-const REDIS_KEY_GOOGLE_API_KEY = 'google_api_key';
 const REDIS_KEY_PENDING_POST = 'pending_post';
 const REDIS_KEY_PENDING_POST_JOB_ID = 'pending_post_job_id';
-const REDIS_KEY_GEMINI_MODEL = 'gemini_model';
-const REDIS_KEY_THINKING_LEVEL = 'gemini_thinking_level';
 
 interface PendingPost {
   title: string;
@@ -71,21 +67,6 @@ async function sendFailureNotification(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Gemini model + thinking level — advanced, optional overrides chosen in
-// "Configure bot" and stored in Redis. Unset means DEFAULT_GEMINI_MODEL with
-// no reasoning_effort (the model decides how much to think).
-// ---------------------------------------------------------------------------
-
-async function getGeminiChoice(): Promise<{ model: string; thinkingLevel: ThinkingLevel | undefined }> {
-  const [storedModel, storedLevel] = await Promise.all([
-    redis.get(REDIS_KEY_GEMINI_MODEL),
-    redis.get(REDIS_KEY_THINKING_LEVEL),
-  ]);
-  const model = storedModel || DEFAULT_GEMINI_MODEL;
-  return { model, thinkingLevel: resolveThinkingLevel(model, storedLevel) };
-}
-
 checkEpisodes.post('/check-new-episodes', async (c) => {
   const event = await c.req.json<TaskRequest<{ manual?: boolean; forceRepost?: boolean }>>();
   // Hoisted so the catch block can reference it even if an early error occurs
@@ -111,7 +92,7 @@ checkEpisodes.post('/check-new-episodes', async (c) => {
       redis.get(REDIS_KEY_GOOGLE_API_KEY),
       settings.get<string>('youtubePlaylistId'),
       settings.get<string>('excludeTitleKeywords').then(v => v || ''),
-      getGeminiChoice(),
+      getGeminiChoice(redis),
       settings.get<string>('systemPrompt'),
       settings.get<string>('botFlairEmoji').then(v => v || ''),
       settings.get<string>('botFlairText').then(v => v || ''),
