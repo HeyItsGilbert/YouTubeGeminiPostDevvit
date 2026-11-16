@@ -28,13 +28,15 @@ type RedditClient = {
   }>;
   getPostFlairTemplates(subredditName: string): Promise<Array<{ id: string; text?: string }>>;
   setPostFlair(options: { subredditName: string; postId: PostId; flairTemplateId: string }): Promise<unknown>;
-  getPostById(id: PostId): Promise<{
-    addComment(options: { text: string }): Promise<{ id: CommentId }>;
-    sticky(position: 1 | 2): Promise<unknown>;
-    comments: {
-      get(count: number): Promise<Array<{ id: CommentId; authorName: string; body: string }>>;
-    };
-  }>;
+  getPostById(id: PostId): Promise<RedditPost>;
+};
+
+type RedditPost = {
+  addComment(options: { text: string }): Promise<{ id?: CommentId } | undefined>;
+  sticky(position: 1 | 2): Promise<unknown>;
+  comments: {
+    get(count: number): Promise<Array<{ id: CommentId; authorName: string; body: string }>>;
+  };
 };
 
 type RedisClient = {
@@ -63,15 +65,26 @@ export async function createEpisodeLinkPost(
   return post.id;
 }
 
+/** Fetch the Episode Post before recording a discussion-comment submission intent. */
+export async function getEpisodePost(reddit: RedditClient, postId: PostId): Promise<RedditPost> {
+  return reddit.getPostById(postId);
+}
+
+/** Submit a generated discussion comment to an already-fetched Episode Post. */
+export async function submitEpisodeDiscussionComment(post: RedditPost, body: string): Promise<CommentId | null> {
+  const comment = await post.addComment({ text: body });
+  return comment?.id ?? null;
+}
+
 /** Add the generated discussion as a top-level comment and return its accepted ID. */
 export async function createEpisodeDiscussionComment(
   reddit: RedditClient,
   postId: PostId,
   body: string,
 ): Promise<CommentId> {
-  const post = await reddit.getPostById(postId);
-  const comment = await post.addComment({ text: body });
-  return comment.id;
+  const commentId = await submitEpisodeDiscussionComment(await getEpisodePost(reddit, postId), body);
+  if (!commentId) throw new Error('Reddit did not accept the discussion comment.');
+  return commentId;
 }
 
 /** Distinguish and sticky the persisted Discussion Comment. */

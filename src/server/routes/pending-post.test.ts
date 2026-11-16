@@ -79,12 +79,13 @@ const redis = {
 const postManager = {
   applyBotFlair: vi.fn(),
   applyFlair: vi.fn(),
-  createEpisodeDiscussionComment: vi.fn(),
   createEpisodeLinkPost: vi.fn(),
   distinguishEpisodeDiscussionComment: vi.fn(),
   findEpisodeDiscussionComment: vi.fn(),
   findEpisodeLinkPost: vi.fn(),
+  getEpisodePost: vi.fn(),
   managePins: vi.fn(),
+  submitEpisodeDiscussionComment: vi.fn(),
   updateEpisodePost: vi.fn(),
 };
 const notifications = {
@@ -135,6 +136,8 @@ describe('post_pending_episode', () => {
     Object.values(notifications).forEach((mock) => {
       if (typeof mock !== 'string') mock.mockReset().mockResolvedValue(undefined);
     });
+    postManager.getEpisodePost.mockResolvedValue({});
+    postManager.submitEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
   });
 
   it('does nothing when a delayed job targets a discarded Pending Post rather than its replacement', async () => {
@@ -153,7 +156,7 @@ describe('post_pending_episode', () => {
     store.set('pending_post', JSON.stringify(queued));
     store.set('pending_post_job_id', 'auto-approve-1');
     postManager.createEpisodeLinkPost.mockResolvedValue('t3_link');
-    postManager.createEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
+    postManager.submitEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
     postManager.distinguishEpisodeDiscussionComment.mockRejectedValueOnce(new Error('distinguish failed'));
 
     await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
@@ -162,7 +165,7 @@ describe('post_pending_episode', () => {
     await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
 
     expect(postManager.createEpisodeLinkPost).toHaveBeenCalledTimes(1);
-    expect(postManager.createEpisodeDiscussionComment).toHaveBeenCalledTimes(1);
+    expect(postManager.submitEpisodeDiscussionComment).toHaveBeenCalledTimes(1);
     expect(store.has('pending_post')).toBe(false);
     expect(JSON.parse(registry.get(queued.videoId)!)).toMatchObject({
       status: 'posted', postId: 't3_link', commentId: 't1_discussion',
@@ -175,7 +178,7 @@ describe('post_pending_episode', () => {
     store.set('pending_post', JSON.stringify(queued));
     publicationProgressFailures = 1;
     postManager.createEpisodeLinkPost.mockResolvedValue('t3_link');
-    postManager.createEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
+    postManager.submitEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
 
     await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
 
@@ -198,7 +201,7 @@ describe('post_pending_episode', () => {
 
     publicationProgressFailures = 0;
     postManager.findEpisodeLinkPost.mockResolvedValue('t3_link');
-    postManager.createEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
+    postManager.submitEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
     await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
 
     expect(postManager.createEpisodeLinkPost).toHaveBeenCalledTimes(1);
@@ -212,22 +215,55 @@ describe('post_pending_episode', () => {
     expect(store.has('pending_post')).toBe(false);
   });
 
+  it('does not record a comment intent when fetching the Episode Post fails', async () => {
+    const queued = pending({ postId: 't3_link' });
+    store.set('pending_post', JSON.stringify(queued));
+    postManager.getEpisodePost.mockRejectedValue(new Error('Post lookup failed'));
+
+    await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
+
+    expect(postManager.submitEpisodeDiscussionComment).not.toHaveBeenCalled();
+    expect(JSON.parse(store.get('pending_post')!)).toMatchObject({ postId: 't3_link' });
+    expect(JSON.parse(store.get('pending_post')!)).not.toHaveProperty('publicationPhase');
+  });
+
+  it('clears the comment intent after Reddit confirms it rejected the submission', async () => {
+    const queued = pending({ postId: 't3_link' });
+    store.set('pending_post', JSON.stringify(queued));
+    postManager.submitEpisodeDiscussionComment.mockResolvedValue(null);
+
+    await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
+
+    expect(JSON.parse(store.get('pending_post')!)).toMatchObject({ postId: 't3_link' });
+    expect(JSON.parse(store.get('pending_post')!)).not.toHaveProperty('publicationPhase');
+  });
+
+  it('retains the comment intent when the submission outcome is uncertain', async () => {
+    const queued = pending({ postId: 't3_link' });
+    store.set('pending_post', JSON.stringify(queued));
+    postManager.submitEpisodeDiscussionComment.mockRejectedValue(new Error('Reddit unavailable'));
+
+    await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
+
+    expect(JSON.parse(store.get('pending_post')!)).toMatchObject({ publicationPhase: 'discussion-comment' });
+  });
+
   it('reconciles an accepted comment after its ID could not be saved instead of adding another comment', async () => {
     const queued = pending({ postId: 't3_link' });
     store.set('pending_post', JSON.stringify(queued));
     publicationProgressFailures = 100;
-    postManager.createEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
+    postManager.submitEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
 
     await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
 
-    expect(postManager.createEpisodeDiscussionComment).toHaveBeenCalledTimes(1);
+    expect(postManager.submitEpisodeDiscussionComment).toHaveBeenCalledTimes(1);
     expect(JSON.parse(store.get('pending_post')!)).toMatchObject({ publicationPhase: 'discussion-comment' });
 
     publicationProgressFailures = 0;
     postManager.findEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
     await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
 
-    expect(postManager.createEpisodeDiscussionComment).toHaveBeenCalledTimes(1);
+    expect(postManager.submitEpisodeDiscussionComment).toHaveBeenCalledTimes(1);
     expect(postManager.findEpisodeDiscussionComment).toHaveBeenCalledWith(reddit, 't3_link', queued.body);
     expect(store.has('pending_post')).toBe(false);
   });
@@ -239,7 +275,7 @@ describe('post_pending_episode', () => {
     await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
 
     expect(postManager.createEpisodeLinkPost).not.toHaveBeenCalled();
-    expect(postManager.createEpisodeDiscussionComment).not.toHaveBeenCalled();
+    expect(postManager.submitEpisodeDiscussionComment).not.toHaveBeenCalled();
     expect(postManager.updateEpisodePost).toHaveBeenCalledWith(reddit, 't1_discussion', 'Moderator edit');
   });
 

@@ -171,13 +171,15 @@ export async function enqueuePendingPost(
   await transaction.multi();
   await transaction.set(REDIS_KEY_PENDING_POST, JSON.stringify(pending));
   await transaction.del(REDIS_KEY_PENDING_POST_JOB_ID);
-  await transaction.hSet(REGISTRY_KEY, {
-    [pending.videoId]: JSON.stringify({
-      title: pending.videoTitle,
-      status: 'pending',
-      processedAt: new Date().toISOString(),
-    } satisfies VideoRecord),
-  });
+  if (existingRecord?.status !== 'posted') {
+    await transaction.hSet(REGISTRY_KEY, {
+      [pending.videoId]: JSON.stringify({
+        title: pending.videoTitle,
+        status: 'pending',
+        processedAt: new Date().toISOString(),
+      } satisfies VideoRecord),
+    });
+  }
   if ((await transaction.exec()).length === 0) return { status: 'conflict' };
   return {
     status: 'queued',
@@ -337,6 +339,28 @@ export async function saveAcceptedPendingPostPublication(
     }
   }
   throw lastError;
+}
+
+/** Clear a pre-submission publication intent after a confirmed rejection. */
+export async function clearPendingPostPublicationIntent(
+  redis: WatchableRedisClient,
+  claimed: PendingPost,
+  phase: PublicationPhase,
+): Promise<PendingPost> {
+  const transaction = await redis.watch(REDIS_KEY_PENDING_POST);
+  const current = await getPendingPost(redis);
+  if (!current || !hasCurrentLease(current, claimed, new Date()) || current.publicationPhase !== phase) {
+    await transaction.unwatch();
+    throw new Error('Pending post claim was lost before publication intent could be cleared.');
+  }
+  const updated = { ...current };
+  delete updated.publicationPhase;
+  await transaction.multi();
+  await transaction.set(REDIS_KEY_PENDING_POST, JSON.stringify(updated));
+  if ((await transaction.exec()).length === 0) {
+    throw new Error('Pending post publication intent could not be cleared because the queue changed.');
+  }
+  return updated;
 }
 
 /** Release only this publisher's lease, preserving any progress it saved. */

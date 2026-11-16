@@ -11,18 +11,20 @@ import { context, reddit, redis, scheduler, settings } from '@devvit/web/server'
 import {
   applyBotFlair,
   applyFlair,
-  createEpisodeDiscussionComment,
   createEpisodeLinkPost,
   distinguishEpisodeDiscussionComment,
   findEpisodeDiscussionComment,
   findEpisodeLinkPost,
+  getEpisodePost,
   managePins,
+  submitEpisodeDiscussionComment,
   updateEpisodePost,
 } from '../postManager.js';
 import {
   beginPendingPostPublication,
   cancelAutoApproveJobById,
   claimPendingPost,
+  clearPendingPostPublicationIntent,
   completePendingPostPublication,
   releasePendingPostClaim,
   saveAcceptedPendingPostPublication,
@@ -109,8 +111,14 @@ pendingPost.post('/post-pending-episode', async (c) => {
       console.log(`[bot] Created post ${postId}`);
     }
     if (!commentId) {
+      const post = await getEpisodePost(reddit, postId);
       claimed = await beginPendingPostPublication(redis, claimed, 'discussion-comment');
-      commentId = await createEpisodeDiscussionComment(reddit, postId, claimed.body);
+      const submittedCommentId = await submitEpisodeDiscussionComment(post, claimed.body);
+      if (!submittedCommentId) {
+        claimed = await clearPendingPostPublicationIntent(redis, claimed, 'discussion-comment');
+        throw new Error('Reddit did not accept the discussion comment.');
+      }
+      commentId = submittedCommentId;
       claimed = await saveAcceptedPendingPostPublication(redis, claimed, { commentId });
       console.log(`[bot] Created discussion comment ${commentId}`);
     } else {

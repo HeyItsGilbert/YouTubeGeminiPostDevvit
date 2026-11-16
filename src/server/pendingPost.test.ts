@@ -147,14 +147,21 @@ describe('pending enqueue', () => {
     expect(await getPendingPost(redis)).toBeNull();
   });
 
-  it('allows an explicit force repost to replace a terminal registry record', async () => {
+  it('keeps the existing posted registry record while queueing a force repost', async () => {
     const pending = pendingPost();
+    const posted = {
+      title: pending.videoTitle,
+      status: 'posted' as const,
+      postId: 't3_original',
+      commentId: 't1_original',
+      processedAt: pending.generatedAt,
+    };
     const { redis, registry } = createAtomicFakeContext({}, {
-      [pending.videoId]: JSON.stringify({ title: pending.videoTitle, status: 'posted', processedAt: pending.generatedAt }),
+      [pending.videoId]: JSON.stringify(posted),
     });
 
     expect(await enqueuePendingPost(redis, pending, { forceRepost: true })).toEqual({ status: 'queued' });
-    expect(JSON.parse(registry.get(pending.videoId)!) as VideoRecord).toMatchObject({ status: 'pending' });
+    expect(JSON.parse(registry.get(pending.videoId)!) as VideoRecord).toEqual(posted);
   });
 
   it('refuses to queue a posted video that became terminal while content was generated', async () => {
@@ -287,6 +294,25 @@ describe('review resolution', () => {
     expect(store.has(REDIS_KEY_PENDING_POST)).toBe(false);
     expect(store.has(REDIS_KEY_PENDING_POST_JOB_ID)).toBe(false);
     expect(JSON.parse(registry.get(pending.videoId)!) as VideoRecord).toMatchObject({ status: 'rejected' });
+  });
+
+  it.each(['discard', 'reject'] as const)('keeps the original Posted record after a force repost is %s', async (action) => {
+    const pending = pendingPost();
+    const posted = {
+      title: pending.videoTitle,
+      status: 'posted' as const,
+      postId: 't3_original',
+      commentId: 't1_original',
+      processedAt: pending.generatedAt,
+    };
+    const { redis, registry } = createAtomicFakeContext({}, {
+      [pending.videoId]: JSON.stringify(posted),
+    });
+    await enqueuePendingPost(redis, pending, { forceRepost: true });
+
+    expect(await resolvePendingPost(redis, targetOf(pending), action)).toMatchObject({ status: 'resolved' });
+    expect(JSON.parse(registry.get(pending.videoId)!) as VideoRecord).toEqual(posted);
+    expect(await enqueuePendingPost(redis, pendingPost())).toEqual({ status: 'ineligible' });
   });
 
   it('makes an existing link-post title immutable while still accepting discussion edits', async () => {
