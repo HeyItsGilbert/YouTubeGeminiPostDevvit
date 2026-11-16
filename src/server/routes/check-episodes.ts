@@ -17,15 +17,34 @@ import { getAllVideoRecords, setVideoRecord } from '../videoRegistry.js';
 import { assemblePostBody, applyPlaceholders, matchesExclusionFilter, isPrivateVideo } from '../../postUtils.js';
 import { REDIS_KEY_GOOGLE_API_KEY, getGeminiChoice } from '../configureBot.js';
 import { REDIS_KEY_PENDING_POST, REDIS_KEY_PENDING_POST_JOB_ID, type PendingPost } from '../pendingPost.js';
+import { CHECK_TRIGGERED_BY_KEY, claimChecker, releaseCheckerClaim } from '../manualCheck.js';
 import { sendFailureNotification, FAILURE_HELP } from '../notifications.js';
 
 export const checkEpisodes = new Hono();
 checkEpisodes.post('/check-new-episodes', async (c) => {
-  const event = await c.req.json<TaskRequest<{ manual?: boolean; forceRepost?: boolean }>>();
-  // Hoisted so the catch block can reference it even if an early error occurs
+  const event = await c.req.json<TaskRequest<{ manual?: boolean; forceRepost?: boolean; triggeredBy?: string }>>();
+  const manual = event.data?.manual === true;
+  // Job data is authoritative; the Redis value only supports old queued jobs.
+  const triggeredBy = event.data?.triggeredBy ?? await redis.get(CHECK_TRIGGERED_BY_KEY);
+  let checkerClaim: string | null = null;
+  // Hoisted so the catch block can reference it even if an early error occurs.
   let notificationMods: string[] = [];
 
   try {
+    checkerClaim = await claimChecker(redis);
+    if (!checkerClaim) {
+      console.log('[bot] Video check skipped: another check is already running.');
+      if (manual) {
+        await sendFailureNotification(
+          reddit,
+          [],
+          triggeredBy,
+          'Video check already running',
+          'Another video check is already running for this subreddit. Wait a moment, then try "Check for new videos" again.',
+        );
+      }
+      return c.json<TaskResponse>({}, 200);
+    }
     // 1. Read all settings
     const [
       googleApiKey,
@@ -61,10 +80,9 @@ checkEpisodes.post('/check-new-episodes', async (c) => {
     // Manual runs always end in something the mod can see: a new post, a
     // failure PM, or one of these PMs. Cron runs stay quiet when there's
     // nothing to do, so an unconfigured install isn't PM'd every 30 minutes.
-    const manual = event.data?.manual === true;
     const tellTriggeringMod = async (subject: string, text: string): Promise<void> => {
       if (manual) {
-        await sendFailureNotification(reddit, [], await redis.get('check_triggered_by'), subject, text);
+        await sendFailureNotification(reddit, [], triggeredBy, subject, text);
       }
     };
 
@@ -301,6 +319,22 @@ checkEpisodes.post('/check-new-episodes', async (c) => {
         }
       }
 
+      // A manual caller needs a visible outcome even when the configured
+      // approval recipients do not include them (including modmail-only installs).
+      if (manual && triggeredBy && !notificationMods.some((username) => username.toLowerCase() === triggeredBy.toLowerCase())) {
+        const combinedPmBody = [notificationBody, '', '---', '', postPreviewBody].join('\n');
+        try {
+          await reddit.sendPrivateMessage({
+            to: triggeredBy,
+            subject: `New episode ready: ${title}`,
+            text: combinedPmBody,
+          });
+          log(`Sent pending-post notification PM to triggering moderator u/${triggeredBy}`);
+        } catch (pmErr) {
+          console.error(`[bot:${subredditName}] Failed to send pending-post notification PM to u/${triggeredBy}: ${pmErr}`);
+        }
+      }
+
       return c.json<TaskResponse>({}, 200);
     }
 
@@ -331,7 +365,6 @@ checkEpisodes.post('/check-new-episodes', async (c) => {
     console.log(`[bot] Post complete: "${title}"`);
   } catch (err) {
     console.error(`[bot] Video checker failed: ${err}`);
-    const triggeredBy = await redis.get('check_triggered_by');
     await sendFailureNotification(
       reddit,
       notificationMods,
@@ -339,6 +372,8 @@ checkEpisodes.post('/check-new-episodes', async (c) => {
       'Video check failed',
       `The video check on r/${context.subredditName} failed with the following error:\n\n    ${err}\n\n${FAILURE_HELP}`,
     );
+  } finally {
+    if (checkerClaim) await releaseCheckerClaim(redis, checkerClaim);
   }
 
   return c.json<TaskResponse>({}, 200);

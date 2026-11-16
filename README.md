@@ -30,7 +30,8 @@ Moderators get three items in the subreddit's **"…"** menu (next to Mod Tools)
   Gemini model (default: Gemini Flash Latest) and thinking level (default:
   the model decides); most subreddits should leave these alone.
 - **Check for new videos** — run a check immediately. On Playtest installs,
-  the form also offers a force-repost testing tool.
+  the form also offers a force-repost testing tool. If the check queues a post
+  for approval, the moderator who started it receives the review notice too.
 - **Review pending post** — when mod approval is enabled, edit the pending post,
   then publish it, discard it (the next check treats the video as unseen), or
   reject the video (never post it). If another moderator resolves or replaces

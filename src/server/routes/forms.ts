@@ -9,7 +9,7 @@
 
 import { Hono } from 'hono';
 import type { UiResponse } from '@devvit/web/shared';
-import { reddit, redis, scheduler } from '@devvit/web/server';
+import { context, reddit, redis, scheduler } from '@devvit/web/server';
 
 import {
   cancelAutoApproveJob,
@@ -20,7 +20,7 @@ import {
   updatePendingPostForReview,
 } from '../pendingPost.js';
 import { deleteVideoRecord, setVideoRecord } from '../videoRegistry.js';
-import { scheduleManualCheck } from '../manualCheck.js';
+import { isPlaytestInstall, scheduleManualCheck } from '../manualCheck.js';
 
 export const forms = new Hono();
 
@@ -95,6 +95,10 @@ forms.post('/review-pending-post-submit', async (c) => {
 
 forms.post('/check-new-videos-submit', async (c) => {
   const values = await c.req.json<{ forceRepost?: boolean }>();
-  await scheduleManualCheck({ reddit, redis, scheduler }, values.forceRepost === true);
-  return c.json<UiResponse>({ showToast: 'Checking for new videos. You will get a message if nothing is posted.' }, 200);
+  const forceRepost = values.forceRepost === true && isPlaytestInstall(context.appVersion);
+  await scheduleManualCheck({ reddit, redis, scheduler }, forceRepost);
+  const showToast = values.forceRepost === true && !forceRepost
+    ? 'Force repost is available only on a playtest install. Checking for new videos normally.'
+    : 'Checking for new videos. You will get a message if nothing is posted.';
+  return c.json<UiResponse>({ showToast }, 200);
 });
