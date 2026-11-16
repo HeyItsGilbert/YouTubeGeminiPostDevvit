@@ -14,15 +14,18 @@ import {
   createEpisodeDiscussionComment,
   createEpisodeLinkPost,
   distinguishEpisodeDiscussionComment,
+  findEpisodeDiscussionComment,
+  findEpisodeLinkPost,
   managePins,
   updateEpisodePost,
 } from '../postManager.js';
 import {
+  beginPendingPostPublication,
   cancelAutoApproveJobById,
   claimPendingPost,
   completePendingPostPublication,
   releasePendingPostClaim,
-  savePendingPostPublication,
+  saveAcceptedPendingPostPublication,
   type PendingPost,
   type PendingPostTarget,
 } from '../pendingPost.js';
@@ -73,16 +76,42 @@ pendingPost.post('/post-pending-episode', async (c) => {
     ]);
     notificationMods = notificationModsSetting.split(',').map(u => u.trim()).filter(Boolean);
 
+    if (claimed.publicationPhase === 'link-post') {
+      const recoveredPostId = await findEpisodeLinkPost(
+        reddit,
+        subredditName,
+        claimed.title,
+        claimed.url,
+        claimed.generatedAt,
+      );
+      if (!recoveredPostId) {
+        throw new Error('Reddit link-post creation outcome is unknown and could not be reconciled safely.');
+      }
+      claimed = await saveAcceptedPendingPostPublication(redis, claimed, { postId: recoveredPostId });
+    }
+    if (claimed.publicationPhase === 'discussion-comment') {
+      if (!claimed.postId) {
+        throw new Error('Reddit discussion-comment creation cannot be reconciled without its link post ID.');
+      }
+      const recoveredCommentId = await findEpisodeDiscussionComment(reddit, claimed.postId, claimed.body);
+      if (!recoveredCommentId) {
+        throw new Error('Reddit discussion-comment creation outcome is unknown and could not be reconciled safely.');
+      }
+      claimed = await saveAcceptedPendingPostPublication(redis, claimed, { commentId: recoveredCommentId });
+    }
+
     let { postId, commentId } = claimed;
     if (!postId) {
+      claimed = await beginPendingPostPublication(redis, claimed, 'link-post');
       console.log(`[bot] Posting pending episode: "${claimed.title}"`);
       postId = await createEpisodeLinkPost(reddit, subredditName, claimed.title, claimed.url);
-      claimed = await savePendingPostPublication(redis, claimed, { postId });
+      claimed = await saveAcceptedPendingPostPublication(redis, claimed, { postId });
       console.log(`[bot] Created post ${postId}`);
     }
     if (!commentId) {
+      claimed = await beginPendingPostPublication(redis, claimed, 'discussion-comment');
       commentId = await createEpisodeDiscussionComment(reddit, postId, claimed.body);
-      claimed = await savePendingPostPublication(redis, claimed, { commentId });
+      claimed = await saveAcceptedPendingPostPublication(redis, claimed, { commentId });
       console.log(`[bot] Created discussion comment ${commentId}`);
     } else {
       // Link-post titles are immutable. A retry applies any review edits to the
@@ -106,7 +135,7 @@ pendingPost.post('/post-pending-episode', async (c) => {
   } catch (err) {
     console.error(`[bot] Failed to post pending episode: ${err}`);
     if (claimed) await releasePendingPostClaim(redis, claimed);
-    const triggeredBy = event.data?.triggeredBy ?? await redis.get('check_triggered_by');
+    const triggeredBy = event.data?.triggeredBy;
     const subject = 'Episode post failed';
     const text = `Failed to post the pending episode on r/${context.subredditName} with error:\n\n    ${err}\n\nThe episode content is still saved. Try "Review pending post" (in the subreddit's "…" menu) to retry.\n\n${FAILURE_HELP}`;
     await sendFailureNotification(reddit, notificationMods, triggeredBy, subject, text);

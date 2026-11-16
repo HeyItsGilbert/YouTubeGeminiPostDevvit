@@ -4,6 +4,8 @@ const store = new Map<string, string>();
 const registry = new Map<string, string>();
 const versions = new Map<string, number>();
 const bump = (key: string) => versions.set(key, (versions.get(key) ?? 0) + 1);
+let publicationProgressFailures = 0;
+
 const scheduler = {
   cancelJob: vi.fn(),
 };
@@ -38,6 +40,18 @@ const redis = {
     return {
       multi: async () => {},
       set: async (key: string, value: string) => commands.push(() => {
+        const pending = key === 'pending_post' ? JSON.parse(value) as { postId?: string; commentId?: string; publicationPhase?: string } : undefined;
+        const current = key === 'pending_post' && store.get(key)
+          ? JSON.parse(store.get(key)!) as { postId?: string; commentId?: string }
+          : undefined;
+        const savesNewId = Boolean(pending && (
+          (pending.postId && pending.postId !== current?.postId)
+          || (pending.commentId && pending.commentId !== current?.commentId)
+        ));
+        if (pending && !pending.publicationPhase && savesNewId && publicationProgressFailures > 0) {
+          publicationProgressFailures -= 1;
+          throw new Error('Redis unavailable while saving publication progress');
+        }
         store.set(key, value);
         bump(key);
       }),
@@ -68,6 +82,8 @@ const postManager = {
   createEpisodeDiscussionComment: vi.fn(),
   createEpisodeLinkPost: vi.fn(),
   distinguishEpisodeDiscussionComment: vi.fn(),
+  findEpisodeDiscussionComment: vi.fn(),
+  findEpisodeLinkPost: vi.fn(),
   managePins: vi.fn(),
   updateEpisodePost: vi.fn(),
 };
@@ -112,6 +128,7 @@ describe('post_pending_episode', () => {
     store.clear();
     registry.clear();
     versions.clear();
+    publicationProgressFailures = 0;
     scheduler.cancelJob.mockReset();
     settings.get.mockReset().mockResolvedValue('');
     Object.values(postManager).forEach((mock) => mock.mockReset().mockResolvedValue(undefined));
@@ -131,26 +148,88 @@ describe('post_pending_episode', () => {
     expect(JSON.parse(store.get('pending_post')!)).toEqual(replacement);
   });
 
-  it('persists the link ID before a later creation failure and resumes without another link post', async () => {
+  it('persists accepted Reddit IDs before a later publication failure and resumes without another creation', async () => {
     const queued = pending();
     store.set('pending_post', JSON.stringify(queued));
     store.set('pending_post_job_id', 'auto-approve-1');
     postManager.createEpisodeLinkPost.mockResolvedValue('t3_link');
-    postManager.createEpisodeDiscussionComment.mockRejectedValueOnce(new Error('comment failed'));
+    postManager.createEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
+    postManager.distinguishEpisodeDiscussionComment.mockRejectedValueOnce(new Error('distinguish failed'));
 
     await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
 
-    expect(JSON.parse(store.get('pending_post')!)).toMatchObject({ postId: 't3_link' });
-    postManager.createEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
+    expect(JSON.parse(store.get('pending_post')!)).toMatchObject({ postId: 't3_link', commentId: 't1_discussion' });
     await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
 
     expect(postManager.createEpisodeLinkPost).toHaveBeenCalledTimes(1);
-    expect(postManager.createEpisodeDiscussionComment).toHaveBeenCalledTimes(2);
+    expect(postManager.createEpisodeDiscussionComment).toHaveBeenCalledTimes(1);
     expect(store.has('pending_post')).toBe(false);
     expect(JSON.parse(registry.get(queued.videoId)!)).toMatchObject({
       status: 'posted', postId: 't3_link', commentId: 't1_discussion',
     });
     expect(scheduler.cancelJob).toHaveBeenCalledWith('auto-approve-1');
+  });
+
+  it('retries saving an accepted link ID without submitting another link post', async () => {
+    const queued = pending();
+    store.set('pending_post', JSON.stringify(queued));
+    publicationProgressFailures = 1;
+    postManager.createEpisodeLinkPost.mockResolvedValue('t3_link');
+    postManager.createEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
+
+    await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
+
+    expect(postManager.createEpisodeLinkPost).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(registry.get(queued.videoId)!)).toMatchObject({
+      status: 'posted', postId: 't3_link', commentId: 't1_discussion',
+    });
+  });
+
+  it('reconciles an accepted link post after its ID could not be saved instead of submitting another', async () => {
+    const queued = pending();
+    store.set('pending_post', JSON.stringify(queued));
+    publicationProgressFailures = 100;
+    postManager.createEpisodeLinkPost.mockResolvedValue('t3_link');
+
+    await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
+
+    expect(postManager.createEpisodeLinkPost).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(store.get('pending_post')!)).toMatchObject({ publicationPhase: 'link-post' });
+
+    publicationProgressFailures = 0;
+    postManager.findEpisodeLinkPost.mockResolvedValue('t3_link');
+    postManager.createEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
+    await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
+
+    expect(postManager.createEpisodeLinkPost).toHaveBeenCalledTimes(1);
+    expect(postManager.findEpisodeLinkPost).toHaveBeenCalledWith(
+      reddit,
+      'test',
+      queued.title,
+      queued.url,
+      queued.generatedAt,
+    );
+    expect(store.has('pending_post')).toBe(false);
+  });
+
+  it('reconciles an accepted comment after its ID could not be saved instead of adding another comment', async () => {
+    const queued = pending({ postId: 't3_link' });
+    store.set('pending_post', JSON.stringify(queued));
+    publicationProgressFailures = 100;
+    postManager.createEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
+
+    await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
+
+    expect(postManager.createEpisodeDiscussionComment).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(store.get('pending_post')!)).toMatchObject({ publicationPhase: 'discussion-comment' });
+
+    publicationProgressFailures = 0;
+    postManager.findEpisodeDiscussionComment.mockResolvedValue('t1_discussion');
+    await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
+
+    expect(postManager.createEpisodeDiscussionComment).toHaveBeenCalledTimes(1);
+    expect(postManager.findEpisodeDiscussionComment).toHaveBeenCalledWith(reddit, 't3_link', queued.body);
+    expect(store.has('pending_post')).toBe(false);
   });
 
   it('applies review edits to an existing Discussion Comment during reconciliation', async () => {
@@ -179,4 +258,22 @@ describe('post_pending_episode', () => {
       expect.stringContaining('Reddit unavailable'),
     );
   });
+  it('does not use a stale checker initiator for unattended auto-approval failures', async () => {
+    const queued = pending();
+    store.set('pending_post', JSON.stringify(queued));
+    store.set('check_triggered_by', 'unrelated-moderator');
+    postManager.createEpisodeLinkPost.mockRejectedValue(new Error('Reddit unavailable'));
+
+    await runJob({ videoId: queued.videoId, generatedAt: queued.generatedAt });
+
+    expect(notifications.sendFailureNotification).toHaveBeenCalledWith(
+      reddit,
+      [],
+      undefined,
+      'Episode post failed',
+      expect.stringContaining('Reddit unavailable'),
+    );
+    expect(notifications.sendModInboxFailureNotification).toHaveBeenCalled();
+  });
 });
+

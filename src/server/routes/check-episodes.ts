@@ -234,7 +234,7 @@ checkEpisodes.post('/check-new-episodes', async (c) => {
         videoTitle: episode.title,
         generatedAt: new Date().toISOString(),
       };
-      const enqueue = await enqueuePendingPost(redis, pendingPost);
+      const enqueue = await enqueuePendingPost(redis, pendingPost, { forceRepost });
       if (enqueue.status !== 'queued') {
         log('A post was queued by another checker. Skipping this generation.');
         await tellTriggeringMod(

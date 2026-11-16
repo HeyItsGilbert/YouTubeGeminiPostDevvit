@@ -71,25 +71,36 @@ forms.post('/review-pending-post-submit', async (c) => {
         ? 'This pending post is already being published. Try again shortly.'
         : update.status === 'title-immutable'
           ? 'The Reddit link-post title cannot change. Reopen the form and edit only the discussion comment.'
-          : ALREADY_RESOLVED_TOAST;
+          : update.status === 'reconciliation-required'
+            ? 'The previous Reddit publication outcome is still being reconciled. Submit the unchanged form to retry safely.'
+            : ALREADY_RESOLVED_TOAST;
     return c.json<UiResponse>({ showToast }, 200);
   }
 
-  // Clear only the timer owned by this exact Pending Post. If publication has
-  // already completed and the checker queued a replacement, it is untouched.
+  let triggeredBy: string | undefined;
+  try {
+    triggeredBy = await reddit.getCurrentUsername();
+    await scheduler.runJob({
+      name: 'post_pending_episode',
+      runAt: new Date(),
+      data: {
+        videoId: target.videoId,
+        generatedAt: target.generatedAt,
+        ...(triggeredBy ? { triggeredBy } : {}),
+      },
+    });
+  } catch (err) {
+    console.error(`[bot] Failed to schedule pending post publication: ${err}`);
+    return c.json<UiResponse>({
+      showToast: 'Could not schedule publication. The auto-approval timer is still active; try Publish again shortly.',
+    }, 200);
+  }
+
+  // Retire only the timer owned by this exact Pending Post after its
+  // replacement publisher exists. If cancellation loses a race, both jobs
+  // carry the same target and the publication lease permits only one.
   const autoApproveJobId = await clearAutoApproveJobForPendingPost(redis, target);
   await cancelAutoApproveJobById(scheduler, autoApproveJobId);
-
-  const triggeredBy = await reddit.getCurrentUsername();
-  await scheduler.runJob({
-    name: 'post_pending_episode',
-    runAt: new Date(),
-    data: {
-      videoId: target.videoId,
-      generatedAt: target.generatedAt,
-      ...(triggeredBy ? { triggeredBy } : {}),
-    },
-  });
 
   return c.json<UiResponse>({ showToast: 'Publishing pending post...' }, 200);
 });

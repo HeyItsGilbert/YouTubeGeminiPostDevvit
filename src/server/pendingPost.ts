@@ -18,10 +18,15 @@ export const REDIS_KEY_PENDING_POST_JOB_ID = 'pending_post_job_id';
 /** Longer than an invocation but bounded so a terminated publisher cannot block the queue. */
 export const PENDING_POST_LEASE_MS = 5 * 60 * 1000;
 
+const PUBLICATION_PROGRESS_SAVE_ATTEMPTS = 3;
+
 export interface PublicationLease {
   owner: string;
   expiresAt: string;
 }
+
+/** Durable marker written before an external Reddit create request. */
+export type PublicationPhase = 'link-post' | 'discussion-comment';
 
 export interface PendingPost {
   title: string;
@@ -33,6 +38,8 @@ export interface PendingPost {
   /** Persisted as each Reddit object is accepted, so retries resume safely. */
   postId?: `t3_${string}`;
   commentId?: `t1_${string}`;
+  /** An external create request whose accepted ID has not yet been saved. */
+  publicationPhase?: PublicationPhase;
   /** Bounded publisher ownership; absent or expired leases are retryable. */
   publicationLease?: PublicationLease;
 }
@@ -67,6 +74,25 @@ type SchedulerClient = {
   cancelJob: (jobId: string) => Promise<void>;
 };
 
+type ScheduledJob = {
+  id: string;
+  name: string;
+  runAt?: Date;
+  cron?: string;
+  data?: unknown;
+};
+
+type AutoApproveSchedulerClient = SchedulerClient & {
+  listJobs: (managers?: number[]) => Promise<ScheduledJob[]>;
+  runJob: (job: {
+    name: string;
+    runAt: Date;
+    data: PendingPostTarget;
+  }) => Promise<string>;
+};
+
+const USER_MANAGED_SCHEDULER = 2;
+
 function matchesTarget(pending: PendingPost, target: PendingPostTarget): boolean {
   return pending.videoId === target.videoId && pending.generatedAt === target.generatedAt;
 }
@@ -84,7 +110,7 @@ function hasCurrentLease(current: PendingPost, claimed: PendingPost, now: Date):
 }
 
 function hasPublicationProgress(pending: PendingPost): boolean {
-  return Boolean(pending.postId || pending.commentId);
+  return Boolean(pending.postId || pending.commentId || pending.publicationPhase);
 }
 
 function parseVideoRecord(json: string | undefined): VideoRecord | undefined {
@@ -110,7 +136,11 @@ export async function getPendingPost(redis: Pick<PendingStore, 'get'>): Promise<
 
 export type PendingPostEnqueue =
   | { status: 'queued'; orphanedAutoApproveJobId?: string }
-  | { status: 'occupied' | 'conflict'; orphanedAutoApproveJobId?: undefined };
+  | { status: 'occupied' | 'ineligible' | 'conflict'; orphanedAutoApproveJobId?: undefined };
+
+export type PendingPostEnqueueOptions = {
+  forceRepost?: boolean;
+};
 
 /**
  * Claim an empty queue and record its video in one Redis transaction. This is
@@ -119,6 +149,7 @@ export type PendingPostEnqueue =
 export async function enqueuePendingPost(
   redis: WatchableRedisClient,
   pending: PendingPost,
+  options: PendingPostEnqueueOptions = {},
 ): Promise<PendingPostEnqueue> {
   const transaction = await redis.watch(REDIS_KEY_PENDING_POST, REDIS_KEY_PENDING_POST_JOB_ID, REGISTRY_KEY);
   const [existing, orphanedAutoApproveJobId, registryJson] = await Promise.all([
@@ -132,18 +163,21 @@ export async function enqueuePendingPost(
   }
 
   const existingRecord = parseVideoRecord(registryJson);
+  if (existingRecord && existingRecord.status !== 'private' && !options.forceRepost) {
+    await transaction.unwatch();
+    return { status: 'ineligible' };
+  }
+
   await transaction.multi();
   await transaction.set(REDIS_KEY_PENDING_POST, JSON.stringify(pending));
   await transaction.del(REDIS_KEY_PENDING_POST_JOB_ID);
-  if (existingRecord?.status !== 'posted') {
-    await transaction.hSet(REGISTRY_KEY, {
-      [pending.videoId]: JSON.stringify({
-        title: pending.videoTitle,
-        status: 'pending',
-        processedAt: new Date().toISOString(),
-      } satisfies VideoRecord),
-    });
-  }
+  await transaction.hSet(REGISTRY_KEY, {
+    [pending.videoId]: JSON.stringify({
+      title: pending.videoTitle,
+      status: 'pending',
+      processedAt: new Date().toISOString(),
+    } satisfies VideoRecord),
+  });
   if ((await transaction.exec()).length === 0) return { status: 'conflict' };
   return {
     status: 'queued',
@@ -228,6 +262,31 @@ export async function claimPendingPost(
   return { status: 'claimed', pending };
 }
 
+/** Record the exact external create request before sending it to Reddit. */
+export async function beginPendingPostPublication(
+  redis: WatchableRedisClient,
+  claimed: PendingPost,
+  phase: PublicationPhase,
+): Promise<PendingPost> {
+  const transaction = await redis.watch(REDIS_KEY_PENDING_POST);
+  const current = await getPendingPost(redis);
+  if (!current || !hasCurrentLease(current, claimed, new Date())) {
+    await transaction.unwatch();
+    throw new Error('Pending post claim was lost before Reddit publication could begin.');
+  }
+  if (current.publicationPhase && current.publicationPhase !== phase) {
+    await transaction.unwatch();
+    throw new Error('Pending post has a different Reddit publication outcome to reconcile.');
+  }
+  const updated = { ...current, publicationPhase: phase };
+  await transaction.multi();
+  await transaction.set(REDIS_KEY_PENDING_POST, JSON.stringify(updated));
+  if ((await transaction.exec()).length === 0) {
+    throw new Error('Pending post changed before Reddit publication could begin.');
+  }
+  return updated;
+}
+
 /** Persist accepted Reddit IDs individually while retaining the owning lease. */
 export async function savePendingPostPublication(
   redis: WatchableRedisClient,
@@ -249,12 +308,35 @@ export async function savePendingPostPublication(
     throw new Error('Pending post already has a different Reddit comment ID.');
   }
   const updated = { ...current, ...publication };
+  if (publication.postId && updated.publicationPhase === 'link-post') {
+    delete updated.publicationPhase;
+  }
+  if (publication.commentId && updated.publicationPhase === 'discussion-comment') {
+    delete updated.publicationPhase;
+  }
   await transaction.multi();
   await transaction.set(REDIS_KEY_PENDING_POST, JSON.stringify(updated));
   if ((await transaction.exec()).length === 0) {
     throw new Error('Pending post changed before publication progress could be saved.');
   }
   return updated;
+}
+
+/** Retry Redis persistence while the leased create result is still in memory. */
+export async function saveAcceptedPendingPostPublication(
+  redis: WatchableRedisClient,
+  claimed: PendingPost,
+  publication: Pick<PendingPost, 'postId' | 'commentId'>,
+): Promise<PendingPost> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < PUBLICATION_PROGRESS_SAVE_ATTEMPTS; attempt += 1) {
+    try {
+      return await savePendingPostPublication(redis, claimed, publication);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 /** Release only this publisher's lease, preserving any progress it saved. */
@@ -274,7 +356,7 @@ export async function releasePendingPostClaim(redis: WatchableRedisClient, claim
 
 export type PendingPostReviewUpdate =
   | { status: 'updated'; pending: PendingPost }
-  | { status: 'missing' | 'stale' | 'busy' | 'title-immutable' | 'conflict'; pending?: undefined };
+  | { status: 'missing' | 'stale' | 'busy' | 'title-immutable' | 'reconciliation-required' | 'conflict'; pending?: undefined };
 
 /** Atomically validate a review form and apply its optional content edits. */
 export async function updatePendingPostForReview(
@@ -299,6 +381,13 @@ export async function updatePendingPostForReview(
   if (pending.postId && updates.title !== undefined && updates.title !== pending.title) {
     await transaction.unwatch();
     return { status: 'title-immutable' };
+  }
+  if (pending.publicationPhase && (
+    (updates.title !== undefined && updates.title !== pending.title)
+    || (updates.body !== undefined && updates.body !== pending.body)
+  )) {
+    await transaction.unwatch();
+    return { status: 'reconciliation-required' };
   }
   if (updates.title !== undefined) pending.title = updates.title;
   if (updates.body !== undefined) pending.body = updates.body;
@@ -384,7 +473,8 @@ export async function completePendingPostPublication(
     getPendingPost(redis),
     redis.get(REDIS_KEY_PENDING_POST_JOB_ID),
   ]);
-  if (!current || !hasCurrentLease(current, claimed, new Date()) || !current.postId || !current.commentId) {
+  if (!current || !hasCurrentLease(current, claimed, new Date())
+    || !current.postId || !current.commentId || current.publicationPhase) {
     await transaction.unwatch();
     return { status: 'lost-claim' };
   }
@@ -424,6 +514,63 @@ export async function clearAutoApproveJobForPendingPost(
   await transaction.del(REDIS_KEY_PENDING_POST_JOB_ID);
   if ((await transaction.exec()).length === 0) return undefined;
   return jobId;
+}
+
+/** Atomically swap a legacy timer ID for its target-bound replacement. */
+async function replaceLegacyAutoApproveJob(
+  redis: WatchableRedisClient,
+  target: PendingPostTarget,
+  legacyJobId: string,
+  replacementJobId: string,
+): Promise<boolean> {
+  const transaction = await redis.watch(REDIS_KEY_PENDING_POST, REDIS_KEY_PENDING_POST_JOB_ID);
+  const [pending, currentJobId] = await Promise.all([
+    getPendingPost(redis),
+    redis.get(REDIS_KEY_PENDING_POST_JOB_ID),
+  ]);
+  if (!pending || !matchesTarget(pending, target) || currentJobId !== legacyJobId) {
+    await transaction.unwatch();
+    return false;
+  }
+  await transaction.multi();
+  await transaction.set(REDIS_KEY_PENDING_POST_JOB_ID, replacementJobId);
+  return (await transaction.exec()).length > 0;
+}
+
+/**
+ * Replace only the stored, targetless legacy auto-approval timer for the
+ * current Pending Post. The old timer remains live until its replacement has
+ * been bound in Redis, then is cancelled as a no-op safety net.
+ */
+export async function migrateLegacyAutoApproveJob(
+  context: { redis: WatchableRedisClient; scheduler: AutoApproveSchedulerClient },
+): Promise<void> {
+  const { redis, scheduler } = context;
+  const [pending, legacyJobId] = await Promise.all([
+    getPendingPost(redis),
+    redis.get(REDIS_KEY_PENDING_POST_JOB_ID),
+  ]);
+  if (!pending || !legacyJobId) return;
+
+  const legacyJob = (await scheduler.listJobs([USER_MANAGED_SCHEDULER])).find((job) => (
+    job.id === legacyJobId
+    && job.name === 'post_pending_episode'
+    && job.runAt !== undefined
+    && job.cron === undefined
+    && job.data === undefined
+  ));
+  if (!legacyJob?.runAt) return;
+
+  const replacementJobId = await scheduler.runJob({
+    name: 'post_pending_episode',
+    runAt: new Date(Math.max(legacyJob.runAt.getTime(), Date.now() + 1_000)),
+    data: { videoId: pending.videoId, generatedAt: pending.generatedAt },
+  });
+  if (!await replaceLegacyAutoApproveJob(redis, pending, legacyJobId, replacementJobId)) {
+    await cancelAutoApproveJobById(scheduler, replacementJobId);
+    return;
+  }
+  await cancelAutoApproveJobById(scheduler, legacyJobId);
 }
 
 /** Cancel an auto-approve job after pending state has been committed. */
@@ -470,15 +617,18 @@ export function buildReviewPendingPostForm(data: {
   videoId: string;
   generatedAt: string;
   postId?: string;
+  publicationPhase?: PublicationPhase;
 }): Form {
   const target = JSON.stringify({ videoId: data.videoId, generatedAt: data.generatedAt });
   const hasLinkedPost = Boolean(data.postId);
+  const hasUncertainPublication = Boolean(data.publicationPhase);
+  const publicationNeedsReconciliation = hasLinkedPost || hasUncertainPublication;
   const fields: FormField[] = [
     {
       type: 'select',
       name: 'action',
       label: 'Action',
-      options: hasLinkedPost
+      options: publicationNeedsReconciliation
         ? [{ label: 'Publish', value: 'publish' }]
         : [
           { label: 'Publish', value: 'publish' },
@@ -501,7 +651,7 @@ export function buildReviewPendingPostForm(data: {
       name: 'postTitle',
       label: 'Post Title',
       defaultValue: data.title,
-      disabled: hasLinkedPost,
+      disabled: hasLinkedPost || hasUncertainPublication,
       required: true,
     },
     {
@@ -509,17 +659,20 @@ export function buildReviewPendingPostForm(data: {
       name: 'postBody',
       label: 'Discussion Comment Body',
       defaultValue: data.body,
+      disabled: hasUncertainPublication,
       required: true,
     },
   ];
 
   return {
     title: 'Review pending post',
-    description: hasLinkedPost
-      ? `Video: ${data.videoTitle}. Reddit already accepted the link post, so its title cannot change. Edit the discussion comment if needed, then publish to finish reconciliation.`
-      : `Video: ${data.videoTitle}. Submit within about 10 minutes of opening this form — Reddit silently drops a stale submission, so reopen "Review pending post" and try again if nothing happens after you submit.`,
+    description: hasUncertainPublication
+      ? `Video: ${data.videoTitle}. Reddit may have accepted the ${data.publicationPhase === 'link-post' ? 'link post' : 'discussion comment'}, but its ID was not recorded. Submit unchanged to reconcile it safely; the bot will not create another Reddit object while that outcome is unknown.`
+      : hasLinkedPost
+        ? `Video: ${data.videoTitle}. Reddit already accepted the link post, so its title cannot change. Edit the discussion comment if needed, then publish to finish reconciliation.`
+        : `Video: ${data.videoTitle}. Submit within about 10 minutes of opening this form — Reddit silently drops a stale submission, so reopen "Review pending post" and try again if nothing happens after you submit.`,
     fields,
-    acceptLabel: hasLinkedPost ? 'Finish publishing' : 'Submit',
+    acceptLabel: hasUncertainPublication ? 'Reconcile publication' : hasLinkedPost ? 'Finish publishing' : 'Submit',
     cancelLabel: 'Close',
   };
 }

@@ -111,6 +111,72 @@ describe('Review pending post form', () => {
     }));
   });
 
+  it('schedules the target-bound publisher before cancelling its fallback timer', async () => {
+    const queued = {
+      title: 'Video', body: 'Body', url: 'https://example.test/video', videoId: 'video-1',
+      videoTitle: 'Video', generatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    store.set('pending_post', JSON.stringify(queued));
+    store.set('pending_post_job_id', 'auto-approve-1');
+
+    await submit({
+      action: ['publish'],
+      pendingPostTarget: [JSON.stringify({ videoId: queued.videoId, generatedAt: queued.generatedAt })],
+      postTitle: queued.title,
+      postBody: queued.body,
+    });
+
+    expect(scheduler.runJob).toHaveBeenCalled();
+    expect(scheduler.cancelJob).toHaveBeenCalledWith('auto-approve-1');
+    expect(scheduler.runJob.mock.invocationCallOrder[0]).toBeLessThan(scheduler.cancelJob.mock.invocationCallOrder[0]!);
+  });
+
+  it('keeps the fallback timer and gives an actionable retry toast when scheduling fails', async () => {
+    const queued = {
+      title: 'Video', body: 'Body', url: 'https://example.test/video', videoId: 'video-1',
+      videoTitle: 'Video', generatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    store.set('pending_post', JSON.stringify(queued));
+    store.set('pending_post_job_id', 'auto-approve-1');
+    scheduler.runJob.mockRejectedValueOnce(new Error('scheduler unavailable'));
+
+    const response = await submit({
+      action: ['publish'],
+      pendingPostTarget: [JSON.stringify({ videoId: queued.videoId, generatedAt: queued.generatedAt })],
+      postTitle: queued.title,
+      postBody: queued.body,
+    });
+
+    expect(await response.json()).toEqual({
+      showToast: 'Could not schedule publication. The auto-approval timer is still active; try Publish again shortly.',
+    });
+    expect(store.get('pending_post_job_id')).toBe('auto-approve-1');
+    expect(scheduler.cancelJob).not.toHaveBeenCalled();
+  });
+
+  it('keeps the fallback timer when the triggering moderator cannot be identified', async () => {
+    const queued = {
+      title: 'Video', body: 'Body', url: 'https://example.test/video', videoId: 'video-1',
+      videoTitle: 'Video', generatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    store.set('pending_post', JSON.stringify(queued));
+    store.set('pending_post_job_id', 'auto-approve-1');
+    reddit.getCurrentUsername.mockRejectedValueOnce(new Error('Reddit unavailable'));
+
+    const response = await submit({
+      action: ['publish'],
+      pendingPostTarget: [JSON.stringify({ videoId: queued.videoId, generatedAt: queued.generatedAt })],
+      postTitle: queued.title,
+      postBody: queued.body,
+    });
+
+    expect(await response.json()).toEqual({
+      showToast: 'Could not schedule publication. The auto-approval timer is still active; try Publish again shortly.',
+    });
+    expect(scheduler.runJob).not.toHaveBeenCalled();
+    expect(store.get('pending_post_job_id')).toBe('auto-approve-1');
+  });
+
   it('requires reconciliation instead of discarding a partially published Pending Post', async () => {
     const queued = {
       title: 'Video', body: 'Body', url: 'https://example.test/video', videoId: 'video-1',

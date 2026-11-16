@@ -12,6 +12,15 @@ type CommentId = `t1_${string}`;
 type RedditClient = {
   submitPost(options: { title: string; subredditName: string; url: string }): Promise<{ id: PostId }>;
   getAppUser(): Promise<{ username: string } | undefined>;
+  getNewPosts(options: { subredditName: string; limit: number }): {
+    get(count: number): Promise<Array<{
+      id: PostId;
+      authorName: string;
+      createdAt: Date;
+      title: string;
+      url: string;
+    }>>;
+  };
   setUserFlair(options: { subredditName: string; username: string; text: string }): Promise<unknown>;
   getCommentById(id: CommentId): Promise<{
     edit(options: { text: string }): Promise<unknown>;
@@ -22,6 +31,9 @@ type RedditClient = {
   getPostById(id: PostId): Promise<{
     addComment(options: { text: string }): Promise<{ id: CommentId }>;
     sticky(position: 1 | 2): Promise<unknown>;
+    comments: {
+      get(count: number): Promise<Array<{ id: CommentId; authorName: string; body: string }>>;
+    };
   }>;
 };
 
@@ -37,6 +49,8 @@ export interface EpisodePost {
 }
 
 // ----- Post creation --------------------------------------------------------
+
+const RECONCILIATION_SEARCH_LIMIT = 100;
 
 /** Submit the immutable Reddit link post and return its accepted ID. */
 export async function createEpisodeLinkPost(
@@ -67,6 +81,45 @@ export async function distinguishEpisodeDiscussionComment(
 ): Promise<void> {
   const comment = await reddit.getCommentById(commentId);
   await comment.distinguish(true);
+}
+
+/** Locate a uniquely matching accepted link post without submitting another. */
+export async function findEpisodeLinkPost(
+  reddit: RedditClient,
+  subredditName: string,
+  title: string,
+  url: string,
+  generatedAt: string,
+): Promise<PostId | null> {
+  const generatedAtMs = Date.parse(generatedAt);
+  if (Number.isNaN(generatedAtMs)) return null;
+  const appUser = await reddit.getAppUser();
+  if (!appUser) return null;
+  const posts = await reddit.getNewPosts({ subredditName, limit: RECONCILIATION_SEARCH_LIMIT })
+    .get(RECONCILIATION_SEARCH_LIMIT);
+  const matches = posts.filter((post) => (
+    post.authorName === appUser.username
+    && post.title === title
+    && post.url === url
+    && post.createdAt.getTime() >= generatedAtMs
+  ));
+  return matches.length === 1 ? matches[0]!.id : null;
+}
+
+/** Locate a uniquely matching accepted Discussion Comment without adding another. */
+export async function findEpisodeDiscussionComment(
+  reddit: RedditClient,
+  postId: PostId,
+  body: string,
+): Promise<CommentId | null> {
+  const appUser = await reddit.getAppUser();
+  if (!appUser) return null;
+  const post = await reddit.getPostById(postId);
+  const comments = await post.comments.get(RECONCILIATION_SEARCH_LIMIT);
+  const matches = comments.filter((comment) => (
+    comment.authorName === appUser.username && comment.body === body
+  ));
+  return matches.length === 1 ? matches[0]!.id : null;
 }
 
 /**

@@ -23,6 +23,7 @@ import { Hono } from 'hono';
 import type { TriggerResponse } from '@devvit/web/shared';
 import { redis, scheduler } from '@devvit/web/server';
 import { ensureCheckerScheduled } from '../checkerSchedule.js';
+import { migrateLegacyAutoApproveJob } from '../pendingPost.js';
 
 export const triggers = new Hono();
 
@@ -32,6 +33,11 @@ triggers.post('/on-app-install', async (c) => {
 });
 
 triggers.post('/on-app-upgrade', async (c) => {
+  try {
+    await migrateLegacyAutoApproveJob({ redis, scheduler });
+  } catch (err) {
+    console.error(`[bot] Failed to migrate legacy auto-approval timer: ${err}`);
+  }
   await ensureCheckerScheduled({ redis, scheduler }, 'reset');
   return c.json<TriggerResponse>({}, 200);
 });

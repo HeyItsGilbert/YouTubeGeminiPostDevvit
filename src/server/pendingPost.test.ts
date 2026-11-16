@@ -10,6 +10,7 @@ import {
   completePendingPostPublication,
   enqueuePendingPost,
   getPendingPost,
+  migrateLegacyAutoApproveJob,
   parsePendingPostTarget,
   parseReviewAction,
   reserveAutoApproveJob,
@@ -135,6 +136,37 @@ describe('pending enqueue', () => {
     expect(JSON.parse(registry.get(pending.videoId)!) as VideoRecord).toMatchObject({ status: 'pending' });
   });
 
+  it('refuses to queue a video that became terminal while content was generated', async () => {
+    const pending = pendingPost();
+    const { redis, registry } = createAtomicFakeContext({}, {
+      [pending.videoId]: JSON.stringify({ title: pending.videoTitle, status: 'rejected', processedAt: pending.generatedAt }),
+    });
+
+    expect(await enqueuePendingPost(redis, pending)).toEqual({ status: 'ineligible' });
+    expect(JSON.parse(registry.get(pending.videoId)!) as VideoRecord).toMatchObject({ status: 'rejected' });
+    expect(await getPendingPost(redis)).toBeNull();
+  });
+
+  it('allows an explicit force repost to replace a terminal registry record', async () => {
+    const pending = pendingPost();
+    const { redis, registry } = createAtomicFakeContext({}, {
+      [pending.videoId]: JSON.stringify({ title: pending.videoTitle, status: 'posted', processedAt: pending.generatedAt }),
+    });
+
+    expect(await enqueuePendingPost(redis, pending, { forceRepost: true })).toEqual({ status: 'queued' });
+    expect(JSON.parse(registry.get(pending.videoId)!) as VideoRecord).toMatchObject({ status: 'pending' });
+  });
+
+  it('refuses to queue a posted video that became terminal while content was generated', async () => {
+    const pending = pendingPost();
+    const { redis } = createAtomicFakeContext({}, {
+      [pending.videoId]: JSON.stringify({ title: pending.videoTitle, status: 'posted', processedAt: pending.generatedAt }),
+    });
+
+    expect(await enqueuePendingPost(redis, pending)).toEqual({ status: 'ineligible' });
+    expect(await getPendingPost(redis)).toBeNull();
+  });
+
   it('does not attach a timer to a replacement Pending Post', async () => {
     const replacement = pendingPost({ videoId: 'replacement', generatedAt: '2026-01-02T00:00:00.000Z' });
     const { redis, store } = createAtomicFakeContext({ [REDIS_KEY_PENDING_POST]: JSON.stringify(replacement) });
@@ -193,6 +225,40 @@ describe('pending publication lease', () => {
     expect(JSON.parse(registry.get(pending.videoId)!) as VideoRecord).toMatchObject({
       status: 'posted', postId: 't3_post', commentId: 't1_comment',
     });
+  });
+});
+
+describe('legacy auto-approval migration', () => {
+  it('replaces only the current pending post’s targetless timer with a target-bound job', async () => {
+    const pending = pendingPost();
+    const { redis, store } = createAtomicFakeContext({
+      [REDIS_KEY_PENDING_POST]: JSON.stringify(pending),
+      [REDIS_KEY_PENDING_POST_JOB_ID]: 'legacy-timer',
+    });
+    const cancelled: string[] = [];
+    const scheduled: Array<{ name: string; runAt: Date; data: { videoId: string; generatedAt: string } }> = [];
+    const legacyRunAt = new Date(Date.now() + 60_000);
+    const scheduler = {
+      listJobs: async () => [
+        { id: 'legacy-timer', name: 'post_pending_episode', runAt: legacyRunAt },
+        { id: 'unrelated-timer', name: 'post_pending_episode', runAt: legacyRunAt },
+      ],
+      runJob: async (job: { name: string; runAt: Date; data: { videoId: string; generatedAt: string } }) => {
+        scheduled.push(job);
+        return 'target-bound-timer';
+      },
+      cancelJob: async (id: string) => { cancelled.push(id); },
+    };
+
+    await migrateLegacyAutoApproveJob({ redis, scheduler });
+
+    expect(scheduled).toEqual([{
+      name: 'post_pending_episode',
+      runAt: legacyRunAt,
+      data: targetOf(pending),
+    }]);
+    expect(store.get(REDIS_KEY_PENDING_POST_JOB_ID)).toBe('target-bound-timer');
+    expect(cancelled).toEqual(['legacy-timer']);
   });
 });
 
