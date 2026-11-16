@@ -23,6 +23,7 @@ function createFakeRedis() {
 }
 
 const draft = (overrides: Partial<RegenerateDraft> = {}): RegenerateDraft => ({
+  requestId: 'request-a',
   postId: 't3_abc',
   videoId: 'vid1',
   commentId: 't1_xyz',
@@ -33,48 +34,50 @@ const draft = (overrides: Partial<RegenerateDraft> = {}): RegenerateDraft => ({
 });
 
 describe('saveRegenerateDraft / loadRegenerateDraft', () => {
-  it('round-trips a draft for a given user', async () => {
+  it('round-trips a draft for a given user and request', async () => {
     const redis = createFakeRedis();
-    await saveRegenerateDraft(redis, 't2_user1', draft());
-    expect(await loadRegenerateDraft(redis, 't2_user1')).toEqual(draft());
+    await saveRegenerateDraft(redis, 't2_user1', 'request-a', draft());
+    expect(await loadRegenerateDraft(redis, 't2_user1', 'request-a')).toEqual(draft());
   });
 
-  it('keys drafts separately per user', async () => {
+  it('keeps concurrent requests from the same moderator separate', async () => {
     const redis = createFakeRedis();
-    await saveRegenerateDraft(redis, 't2_user1', draft({ model: 'model-a' }));
-    await saveRegenerateDraft(redis, 't2_user2', draft({ model: 'model-b' }));
-    expect((await loadRegenerateDraft(redis, 't2_user1'))?.model).toBe('model-a');
-    expect((await loadRegenerateDraft(redis, 't2_user2'))?.model).toBe('model-b');
+    await saveRegenerateDraft(redis, 't2_user1', 'request-a', draft({ requestId: 'request-a', commentId: 't1_a' }));
+    await saveRegenerateDraft(redis, 't2_user1', 'request-b', draft({ requestId: 'request-b', commentId: 't1_b' }));
+    expect((await loadRegenerateDraft(redis, 't2_user1', 'request-a'))?.commentId).toBe('t1_a');
+    expect((await loadRegenerateDraft(redis, 't2_user1', 'request-b'))?.commentId).toBe('t1_b');
   });
 
   it('sets a 1 hour expiration on save', async () => {
     const redis = createFakeRedis();
     const before = Date.now();
-    await saveRegenerateDraft(redis, 't2_user1', draft());
-    const expiration = redis.expirations.get(draftKey('t2_user1'));
+    await saveRegenerateDraft(redis, 't2_user1', 'request-a', draft());
+    const expiration = redis.expirations.get(draftKey('t2_user1', 'request-a'));
     expect(expiration).toBeDefined();
     const ttlMs = (expiration as Date).getTime() - before;
     expect(ttlMs).toBeGreaterThan(59 * 60 * 1000);
     expect(ttlMs).toBeLessThanOrEqual(60 * 60 * 1000);
   });
 
-  it('returns null when no draft exists for the user', async () => {
+  it('returns null when no draft exists for the user and request', async () => {
     const redis = createFakeRedis();
-    expect(await loadRegenerateDraft(redis, 'never-saved')).toBeNull();
+    expect(await loadRegenerateDraft(redis, 'never-saved', 'request-a')).toBeNull();
   });
 
   it('returns null rather than throwing on corrupt JSON', async () => {
     const redis = createFakeRedis();
-    await redis.set(draftKey('t2_user1'), 'not valid json');
-    expect(await loadRegenerateDraft(redis, 't2_user1')).toBeNull();
+    await redis.set(draftKey('t2_user1', 'request-a'), 'not valid json');
+    expect(await loadRegenerateDraft(redis, 't2_user1', 'request-a')).toBeNull();
   });
 });
 
 describe('clearRegenerateDraft', () => {
-  it('removes a saved draft', async () => {
+  it('removes only the matching saved request', async () => {
     const redis = createFakeRedis();
-    await saveRegenerateDraft(redis, 't2_user1', draft());
-    await clearRegenerateDraft(redis, 't2_user1');
-    expect(await loadRegenerateDraft(redis, 't2_user1')).toBeNull();
+    await saveRegenerateDraft(redis, 't2_user1', 'request-a', draft({ requestId: 'request-a' }));
+    await saveRegenerateDraft(redis, 't2_user1', 'request-b', draft({ requestId: 'request-b' }));
+    await clearRegenerateDraft(redis, 't2_user1', 'request-a');
+    expect(await loadRegenerateDraft(redis, 't2_user1', 'request-a')).toBeNull();
+    expect(await loadRegenerateDraft(redis, 't2_user1', 'request-b')).toMatchObject({ requestId: 'request-b' });
   });
 });

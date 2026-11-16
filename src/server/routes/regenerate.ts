@@ -13,8 +13,10 @@
  * Step 1's submit handler reads the target post from `context.postId`. From
  * step 2 onward the chain can no longer rely on request context alone, so
  * step 1 persists everything step 2 needs — including the post ID — in a
- * TTL'd Redis draft keyed by user ID (see `../regenerateDraft.ts`).
+ * request-scoped TTL'd Redis draft (see `../regenerateDraft.ts`).
  */
+import { randomUUID } from 'node:crypto';
+
 
 import { Hono } from 'hono';
 import type { TaskRequest, TaskResponse } from '@devvit/web/server';
@@ -31,9 +33,10 @@ import { findVideoByPostId, isRegeneratable } from '../videoRegistry.js';
 import { assemblePostBody, applyPlaceholders } from '../../postUtils.js';
 import { DEFAULT_GEMINI_MODEL, GEMINI_MODELS, resolveThinkingLevel, thinkingLevelsFor } from '../../geminiModels.js';
 import {
-  MODEL_DEFAULT_THINKING_LEVEL,
   buildStep1Form,
   buildStep2Form,
+  decodeThinkingLevelSelection,
+  resolveRegenerationThinkingLevel,
   type Step1FormValues,
   type Step2FormValues,
 } from '../regenerateForms.js';
@@ -111,7 +114,9 @@ regenerate.post('/form/regenerate-step1', async (c) => {
   const triggeredBy = context.username ?? null;
 
   if (values.chooseThinkingLevel) {
+    const requestId = randomUUID();
     const draft: RegenerateDraft = {
+      requestId,
       postId,
       videoId: found.videoId,
       commentId: found.record.commentId,
@@ -119,11 +124,11 @@ regenerate.post('/form/regenerate-step1', async (c) => {
       model,
       triggeredBy,
     };
-    await saveRegenerateDraft(redis, userId, draft);
+    await saveRegenerateDraft(redis, userId, requestId, draft);
     return c.json<UiResponse>({
       showForm: {
         name: 'regenerateStep2Form',
-        form: buildStep2Form({ levels: thinkingLevelsFor(model) }),
+        form: buildStep2Form({ levels: thinkingLevelsFor(model), requestId }),
       },
     });
   }
@@ -162,19 +167,22 @@ regenerate.post('/form/regenerate-step2', async (c) => {
     });
   }
 
-  const draft = await loadRegenerateDraft(redis, userId);
-  await clearRegenerateDraft(redis, userId);
-  if (!draft) {
+  const selection = decodeThinkingLevelSelection(values.thinkingLevel);
+  if (!selection) {
+    return c.json<UiResponse>({
+      showToast: 'This regeneration request is invalid — start over from the post menu.',
+    });
+  }
+
+  const draft = await loadRegenerateDraft(redis, userId, selection.requestId);
+  if (!draft || draft.requestId !== selection.requestId) {
     return c.json<UiResponse>({
       showToast: 'This regeneration request expired — start over from the post menu.',
     });
   }
+  await clearRegenerateDraft(redis, userId, selection.requestId);
 
-  const chosenLevel = values.thinkingLevel[0] ?? MODEL_DEFAULT_THINKING_LEVEL;
-  const thinkingLevel =
-    (chosenLevel === MODEL_DEFAULT_THINKING_LEVEL
-      ? resolveThinkingLevel(draft.model, (await getGeminiChoice(redis)).thinkingLevel)
-      : resolveThinkingLevel(draft.model, chosenLevel)) ?? null;
+  const thinkingLevel = resolveRegenerationThinkingLevel(draft.model, selection.level);
 
   await scheduler.runJob({
     name: 'regenerate_discussion',

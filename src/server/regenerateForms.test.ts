@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { Form } from '@devvit/web/shared';
-import { MODEL_DEFAULT_THINKING_LEVEL, buildStep1Form, buildStep2Form } from './regenerateForms.js';
+import {
+  MODEL_DEFAULT_THINKING_LEVEL,
+  buildStep1Form,
+  buildStep2Form,
+  decodeThinkingLevelSelection,
+  resolveRegenerationThinkingLevel,
+} from './regenerateForms.js';
 import type { GeminiModel } from '../types.js';
 
 const MODELS: GeminiModel[] = [
@@ -39,6 +45,14 @@ describe('buildStep1Form', () => {
     expect(modelField.defaultValue).toEqual(['gemini-pro-latest']);
   });
 
+  it('keeps a configured model that the current catalog no longer lists selectable', () => {
+    const form = buildStep1Form({ systemPrompt: 'x', models: MODELS, selectedModel: 'retired-model' });
+    const modelField = fieldByName(form, 'model');
+    if (modelField?.type !== 'select') throw new Error('expected select field');
+    expect(modelField.options).toContainEqual({ label: 'retired-model (no longer listed)', value: 'retired-model' });
+    expect(modelField.defaultValue).toEqual(['retired-model']);
+  });
+
   it('includes an off-by-default toggle to choose a thinking level for this run', () => {
     const form = buildStep1Form({ systemPrompt: 'x', models: MODELS, selectedModel: 'gemini-flash-latest' });
     const field = fieldByName(form, 'chooseThinkingLevel');
@@ -53,19 +67,32 @@ describe('buildStep1Form', () => {
 });
 
 describe('buildStep2Form', () => {
-  it("offers 'Model default' plus the model's accepted levels", () => {
-    const form = buildStep2Form({ levels: ['none', 'low', 'high'] });
+  it("offers 'Model default' plus the model's accepted levels and binds them to the request", () => {
+    const form = buildStep2Form({ levels: ['none', 'low', 'high'], requestId: 'request-a' });
     const field = fieldByName(form, 'thinkingLevel');
     expect(field?.type).toBe('select');
     if (field?.type !== 'select') throw new Error('expected select field');
-    expect(field.options.map((o) => o.value)).toEqual([MODEL_DEFAULT_THINKING_LEVEL, 'none', 'low', 'high']);
-    expect(field.defaultValue).toEqual([MODEL_DEFAULT_THINKING_LEVEL]);
+    expect(field.options.map((o) => o.value)).toEqual([
+      'request-a:default', 'request-a:none', 'request-a:low', 'request-a:high',
+    ]);
+    expect(field.defaultValue).toEqual(['request-a:default']);
+    expect(decodeThinkingLevelSelection(field.defaultValue)).toEqual({ requestId: 'request-a', level: MODEL_DEFAULT_THINKING_LEVEL });
   });
 
   it("offers only 'Model default' for a model with no catalogued levels", () => {
-    const form = buildStep2Form({ levels: [] });
+    const form = buildStep2Form({ levels: [], requestId: 'request-a' });
     const field = fieldByName(form, 'thinkingLevel');
     if (field?.type !== 'select') throw new Error('expected select field');
-    expect(field.options.map((o) => o.value)).toEqual([MODEL_DEFAULT_THINKING_LEVEL]);
+    expect(field.options.map((o) => o.value)).toEqual(['request-a:default']);
+  });
+
+  it('rejects a malformed request-bound selection', () => {
+    expect(decodeThinkingLevelSelection(['default'])).toBeUndefined();
+  });
+});
+
+describe('resolveRegenerationThinkingLevel', () => {
+  it('omits the thinking override when the moderator selects Model default', () => {
+    expect(resolveRegenerationThinkingLevel('gemini-flash-latest', MODEL_DEFAULT_THINKING_LEVEL)).toBeNull();
   });
 });

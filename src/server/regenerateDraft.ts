@@ -7,6 +7,8 @@
  */
 
 export interface RegenerateDraft {
+  /** Opaque identifier binding a step-two form to this exact request. */
+  requestId: string;
   /** Target post, carried through so step 2 doesn't depend on request context. */
   postId: string;
   videoId: string;
@@ -26,16 +28,17 @@ type RedisClient = {
 /** Long enough to outlast the ~10 minute menu-action window with margin, short enough not to leak stale drafts. */
 const DRAFT_TTL_MS = 60 * 60 * 1000;
 
-export function draftKey(userId: string): string {
-  return `regenerate_draft:${userId}`;
+export function draftKey(userId: string, requestId: string): string {
+  return `regenerate_draft:${userId}:${requestId}`;
 }
 
 export async function saveRegenerateDraft(
   redis: RedisClient,
   userId: string,
+  requestId: string,
   draft: RegenerateDraft,
 ): Promise<void> {
-  await redis.set(draftKey(userId), JSON.stringify(draft), {
+  await redis.set(draftKey(userId, requestId), JSON.stringify(draft), {
     expiration: new Date(Date.now() + DRAFT_TTL_MS),
   });
 }
@@ -44,8 +47,9 @@ export async function saveRegenerateDraft(
 export async function loadRegenerateDraft(
   redis: RedisClient,
   userId: string,
+  requestId: string,
 ): Promise<RegenerateDraft | null> {
-  const raw = await redis.get(draftKey(userId));
+  const raw = await redis.get(draftKey(userId, requestId));
   if (!raw) return null;
   try {
     return JSON.parse(raw) as RegenerateDraft;
@@ -54,6 +58,6 @@ export async function loadRegenerateDraft(
   }
 }
 
-export async function clearRegenerateDraft(redis: RedisClient, userId: string): Promise<void> {
-  await redis.del(draftKey(userId));
+export async function clearRegenerateDraft(redis: RedisClient, userId: string, requestId: string): Promise<void> {
+  await redis.del(draftKey(userId, requestId));
 }
