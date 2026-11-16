@@ -11,6 +11,21 @@
     "onPostSubmit": "/internal/triggers/on-post-submit",
     "onCommentSubmit": "/internal/triggers/on-comment-submit"
   },
+  "menu": {
+    "items": [
+      {
+        "label": "Regenerate discussion",
+        "description": "Rewrite this post's discussion comment with fresh Gemini output",
+        "forUserType": "moderator",
+        "location": "post",
+        "endpoint": "/internal/menu/regenerate-discussion"
+      }
+    ]
+  },
+  "forms": {
+    "regenerateStep1Form": "/internal/form/regenerate-step1",
+    "regenerateStep2Form": "/internal/form/regenerate-step2"
+  },
   "scheduler": {
     "tasks": {
       "check_new_episodes": {
@@ -102,6 +117,13 @@
         "endpoint": "/internal/menu/review-pending-post"
       },
       {
+        "label": "Regenerate discussion",
+        "description": "Rewrite this episode's discussion comment.",
+        "location": "post",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/regenerate-discussion"
+      },
+      {
         "label": "Configure bot",
         "description": "API key, pin slot, and Gemini model.",
         "location": "subreddit",
@@ -112,6 +134,8 @@
   },
   "forms": {
     "reviewPendingPost": "/internal/form/review-pending-post-submit",
+    "regenerateStep1Form": "/internal/form/regenerate-step1",
+    "regenerateStep2Form": "/internal/form/regenerate-step2",
     "configureBot": "/internal/form/configure-bot",
     "configureBotThinkingLevel": "/internal/form/configure-bot-thinking-level"
   },

@@ -20,7 +20,6 @@ import { REDIS_KEY_PENDING_POST, REDIS_KEY_PENDING_POST_JOB_ID, type PendingPost
 import { sendFailureNotification, FAILURE_HELP } from '../notifications.js';
 
 export const checkEpisodes = new Hono();
-
 checkEpisodes.post('/check-new-episodes', async (c) => {
   const event = await c.req.json<TaskRequest<{ manual?: boolean; forceRepost?: boolean }>>();
   // Hoisted so the catch block can reference it even if an early error occurs
