@@ -1,39 +1,63 @@
 /**
- * `post_pending_episode` scheduler task — publishes a mod-approved or
- * auto-approved Pending Post through the same link-post-plus-stickied-
- * comment, flair, and pin-rotation path as an immediate post (see
- * `check-episodes.ts` step 7-9). Triggered immediately (with job data
- * `{ triggeredBy }`) by the "Review pending post" form's Publish action, or
- * scheduled ahead by `check_new_episodes` when `autoApproveWindowMinutes` is
- * configured. A missing Pending Post (already published, discarded, or
- * rejected by the time this runs) is a no-op, not an error.
+ * `post_pending_episode` scheduler task — publishes one exact Pending Post.
+ * Both manual and auto-approve jobs carry the immutable video/generation
+ * target, so delayed jobs cannot publish a replacement queue entry.
  */
 
 import { Hono } from 'hono';
 import type { TaskRequest, TaskResponse } from '@devvit/web/server';
-import { context, reddit, redis, settings } from '@devvit/web/server';
+import { context, reddit, redis, scheduler, settings } from '@devvit/web/server';
 
-import { createEpisodePost, applyBotFlair, applyFlair, managePins } from '../postManager.js';
-import { setVideoRecord } from '../videoRegistry.js';
 import {
-  REDIS_KEY_PENDING_POST,
-  REDIS_KEY_PENDING_POST_JOB_ID,
+  applyBotFlair,
+  applyFlair,
+  createEpisodeDiscussionComment,
+  createEpisodeLinkPost,
+  distinguishEpisodeDiscussionComment,
+  managePins,
+  updateEpisodePost,
+} from '../postManager.js';
+import {
+  cancelAutoApproveJobById,
   claimPendingPost,
+  completePendingPostPublication,
   releasePendingPostClaim,
   savePendingPostPublication,
   type PendingPost,
+  type PendingPostTarget,
 } from '../pendingPost.js';
-import { sendFailureNotification, FAILURE_HELP } from '../notifications.js';
+import {
+  sendFailureNotification,
+  sendModInboxFailureNotification,
+  FAILURE_HELP,
+} from '../notifications.js';
 
 export const pendingPost = new Hono();
 
+type PendingPostJobData = {
+  triggeredBy?: string;
+  videoId?: string;
+  generatedAt?: string;
+};
+
+function parsePendingPostJobTarget(data: PendingPostJobData | undefined): PendingPostTarget | null {
+  if (!data?.videoId || !data.generatedAt) return null;
+  return { videoId: data.videoId, generatedAt: data.generatedAt };
+}
+
 pendingPost.post('/post-pending-episode', async (c) => {
-  const event = await c.req.json<TaskRequest<{ triggeredBy?: string }>>();
+  const event = await c.req.json<TaskRequest<PendingPostJobData>>();
+  const target = parsePendingPostJobTarget(event.data);
+  if (!target) {
+    console.log('[bot] post_pending_episode: job has no pending-post target.');
+    return c.json<TaskResponse>({}, 200);
+  }
+
   let notificationMods: string[] = [];
   let claimed: PendingPost | undefined;
 
   try {
-    const claim = await claimPendingPost(redis);
+    const claim = await claimPendingPost(redis, target);
     if (claim.status !== 'claimed') {
       console.log(`[bot] post_pending_episode: pending post is ${claim.status}.`);
       return c.json<TaskResponse>({}, 200);
@@ -50,16 +74,22 @@ pendingPost.post('/post-pending-episode', async (c) => {
     notificationMods = notificationModsSetting.split(',').map(u => u.trim()).filter(Boolean);
 
     let { postId, commentId } = claimed;
-    if (!postId || !commentId) {
+    if (!postId) {
       console.log(`[bot] Posting pending episode: "${claimed.title}"`);
-      const created = await createEpisodePost(reddit, subredditName, claimed.title, claimed.url, claimed.body);
-      postId = created.postId;
-      commentId = created.commentId;
-      // Pinning can fail after Reddit has accepted both creations. Store this
-      // progress first so the next attempt finishes the existing post.
-      await savePendingPostPublication(redis, claimed, { postId, commentId });
-      console.log(`[bot] Created post ${postId} with discussion comment ${commentId}`);
+      postId = await createEpisodeLinkPost(reddit, subredditName, claimed.title, claimed.url);
+      claimed = await savePendingPostPublication(redis, claimed, { postId });
+      console.log(`[bot] Created post ${postId}`);
     }
+    if (!commentId) {
+      commentId = await createEpisodeDiscussionComment(reddit, postId, claimed.body);
+      claimed = await savePendingPostPublication(redis, claimed, { commentId });
+      console.log(`[bot] Created discussion comment ${commentId}`);
+    } else {
+      // Link-post titles are immutable. A retry applies any review edits to the
+      // durable Discussion Comment before completing the remaining operations.
+      await updateEpisodePost(reddit, commentId, claimed.body);
+    }
+    await distinguishEpisodeDiscussionComment(reddit, commentId);
 
     await Promise.all([
       flairName ? applyFlair(reddit, subredditName, postId, flairName) : Promise.resolve(),
@@ -67,29 +97,22 @@ pendingPost.post('/post-pending-episode', async (c) => {
       managePins(reddit, redis, postId),
     ]);
 
-    await setVideoRecord(redis, claimed.videoId, {
-      title: claimed.videoTitle,
-      status: 'posted',
-      postId,
-      commentId,
-      processedAt: new Date().toISOString(),
-    });
-
-    // The successful claim is still the only writer for this record.
-    await redis.del(REDIS_KEY_PENDING_POST);
-    await redis.del(REDIS_KEY_PENDING_POST_JOB_ID);
+    const completion = await completePendingPostPublication(redis, claimed, new Date().toISOString());
+    if (completion.status !== 'completed') {
+      throw new Error('Pending post claim was lost before completion could be recorded.');
+    }
+    await cancelAutoApproveJobById(scheduler, completion.autoApproveJobId);
     console.log(`[bot] Pending episode posted: "${claimed.title}"`);
   } catch (err) {
     console.error(`[bot] Failed to post pending episode: ${err}`);
     if (claimed) await releasePendingPostClaim(redis, claimed);
     const triggeredBy = event.data?.triggeredBy ?? await redis.get('check_triggered_by');
-    await sendFailureNotification(
-      reddit,
-      notificationMods,
-      triggeredBy,
-      'Episode post failed',
-      `Failed to post the pending episode on r/${context.subredditName} with error:\n\n    ${err}\n\nThe episode content is still saved. Try "Review pending post" (in the subreddit's "…" menu) to retry.\n\n${FAILURE_HELP}`,
-    );
+    const subject = 'Episode post failed';
+    const text = `Failed to post the pending episode on r/${context.subredditName} with error:\n\n    ${err}\n\nThe episode content is still saved. Try "Review pending post" (in the subreddit's "…" menu) to retry.\n\n${FAILURE_HELP}`;
+    await sendFailureNotification(reddit, notificationMods, triggeredBy, subject, text);
+    if (notificationMods.length === 0 && !triggeredBy) {
+      await sendModInboxFailureNotification(reddit, context.subredditName, subject, text);
+    }
   }
 
   return c.json<TaskResponse>({}, 200);

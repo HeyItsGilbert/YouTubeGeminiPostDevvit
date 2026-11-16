@@ -1,8 +1,8 @@
 /**
  * "Review pending post" form submit handler — one form, three actions.
- * Publish (optionally after editing) triggers `post_pending_episode`
- * immediately with job data `{ triggeredBy }` so a failure PMs the
- * submitting mod; Discard and Reject resolve the Pending Post directly.
+ * Publish (optionally after editing) triggers `post_pending_episode` with the
+ * exact video/generation target and optional triggering mod; Discard and Reject
+ * resolve the Pending Post and matching registry record atomically.
  * Every branch returns only a toast — never a form (see AGENTS.md's "no
  * endpoint returns both a toast and a form" rule).
  */
@@ -12,14 +12,13 @@ import type { UiResponse } from '@devvit/web/shared';
 import { reddit, redis, scheduler } from '@devvit/web/server';
 
 import {
-  cancelAutoApproveJob,
   cancelAutoApproveJobById,
+  clearAutoApproveJobForPendingPost,
   parsePendingPostTarget,
   parseReviewAction,
   resolvePendingPost,
   updatePendingPostForReview,
 } from '../pendingPost.js';
-import { deleteVideoRecord, setVideoRecord } from '../videoRegistry.js';
 
 export const forms = new Hono();
 
@@ -42,25 +41,21 @@ forms.post('/review-pending-post-submit', async (c) => {
   const action = parseReviewAction(values);
 
   if (action === 'discard' || action === 'reject') {
-    const resolution = await resolvePendingPost(redis, target);
+    const resolution = await resolvePendingPost(redis, target, action);
     if (resolution.status !== 'resolved') {
       const showToast = resolution.status === 'stale'
         ? 'This review form is stale. Open "Review pending post" and try again.'
         : resolution.status === 'busy'
           ? 'This pending post is already being published. Try again shortly.'
-          : ALREADY_RESOLVED_TOAST;
+          : resolution.status === 'partially-published'
+            ? 'This post was partly published. Choose Publish to finish it; it cannot be discarded or rejected.'
+            : ALREADY_RESOLVED_TOAST;
       return c.json<UiResponse>({ showToast }, 200);
     }
     await cancelAutoApproveJobById(scheduler, resolution.autoApproveJobId);
     if (action === 'discard') {
-      await deleteVideoRecord(redis, resolution.pending.videoId);
       return c.json<UiResponse>({ showToast: 'Pending post discarded.' }, 200);
     }
-    await setVideoRecord(redis, resolution.pending.videoId, {
-      title: resolution.pending.videoTitle,
-      status: 'rejected',
-      processedAt: new Date().toISOString(),
-    });
     return c.json<UiResponse>({ showToast: `Rejected "${resolution.pending.videoTitle}". It will not be posted.` }, 200);
   }
 
@@ -74,19 +69,26 @@ forms.post('/review-pending-post-submit', async (c) => {
       ? 'This review form is stale. Open "Review pending post" and try again.'
       : update.status === 'busy'
         ? 'This pending post is already being published. Try again shortly.'
-        : ALREADY_RESOLVED_TOAST;
+        : update.status === 'title-immutable'
+          ? 'The Reddit link-post title cannot change. Reopen the form and edit only the discussion comment.'
+          : ALREADY_RESOLVED_TOAST;
     return c.json<UiResponse>({ showToast }, 200);
   }
 
-  // Publishing now supersedes any auto-approve timer. A timer that already
-  // started cannot duplicate the post because the job claims it atomically.
-  await cancelAutoApproveJob(redis, scheduler);
+  // Clear only the timer owned by this exact Pending Post. If publication has
+  // already completed and the checker queued a replacement, it is untouched.
+  const autoApproveJobId = await clearAutoApproveJobForPendingPost(redis, target);
+  await cancelAutoApproveJobById(scheduler, autoApproveJobId);
 
   const triggeredBy = await reddit.getCurrentUsername();
   await scheduler.runJob({
     name: 'post_pending_episode',
     runAt: new Date(),
-    data: triggeredBy ? { triggeredBy } : undefined,
+    data: {
+      videoId: target.videoId,
+      generatedAt: target.generatedAt,
+      ...(triggeredBy ? { triggeredBy } : {}),
+    },
   });
 
   return c.json<UiResponse>({ showToast: 'Publishing pending post...' }, 200);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sendFailureNotification } from './notifications.js';
+import { sendFailureNotification, sendModInboxFailureNotification } from './notifications.js';
 
 type SentMessage = { to: string; subject: string; text: string };
 
@@ -44,5 +44,25 @@ describe('sendFailureNotification', () => {
       sendFailureNotification(reddit, ['alice', 'bob'], null, 'Subject', 'Body'),
     ).resolves.toBeUndefined();
     expect(sent).toEqual([{ to: 'bob', subject: 'Subject', text: 'Body' }]);
+  });
+});
+
+describe('sendModInboxFailureNotification', () => {
+  it('creates a moderator inbox conversation when no PM recipient can receive an auto-approval failure', async () => {
+    const inboxes: Array<{ subredditId: string; subject: string; bodyMarkdown: string }> = [];
+    const reddit = {
+      getSubredditByName: async () => ({ id: 't5_test' as const }),
+      modMail: {
+        createModInboxConversation: async (message: { subredditId: string; subject: string; bodyMarkdown: string }) => {
+          inboxes.push(message);
+        },
+      },
+    };
+
+    await sendModInboxFailureNotification(reddit, 'test', 'Episode post failed', 'Retry it.');
+
+    expect(inboxes).toEqual([{
+      subredditId: 't5_test', subject: 'Episode post failed', bodyMarkdown: 'Retry it.',
+    }]);
   });
 });

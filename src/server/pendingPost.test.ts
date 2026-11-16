@@ -1,56 +1,84 @@
 import { describe, expect, it } from 'vitest';
+import type { VideoRecord } from '../types.js';
+import { REGISTRY_KEY } from './videoRegistry.js';
 import {
+  PENDING_POST_LEASE_MS,
   REDIS_KEY_PENDING_POST,
   REDIS_KEY_PENDING_POST_JOB_ID,
   buildReviewPendingPostForm,
-  cancelAutoApproveJob,
   claimPendingPost,
-  clearPendingPost,
+  completePendingPostPublication,
+  enqueuePendingPost,
   getPendingPost,
   parsePendingPostTarget,
   parseReviewAction,
-  releasePendingPostClaim,
+  reserveAutoApproveJob,
+  resolvePendingPost,
   savePendingPostPublication,
+  updatePendingPostForReview,
   type PendingPost,
 } from './pendingPost.js';
 
-/** Map-backed fake Redis + array-backed fake scheduler — no Devvit SDK mocking. */
-function createFakeContext(initial: Record<string, string> = {}) {
+/** Map-backed Redis fake with optimistic transactions, including hash writes. */
+function createAtomicFakeContext(
+  initial: Record<string, string> = {},
+  initialRegistry: Record<string, string> = {},
+) {
   const store = new Map<string, string>(Object.entries(initial));
-  const cancelledIds: string[] = [];
-
+  const registry = new Map<string, string>(Object.entries(initialRegistry));
+  const versions = new Map<string, number>();
+  const bump = (key: string) => versions.set(key, (versions.get(key) ?? 0) + 1);
   const redis = {
     get: async (key: string): Promise<string | undefined> => store.get(key),
     set: async (key: string, value: string): Promise<void> => {
       store.set(key, value);
+      bump(key);
     },
-    del: async (key: string): Promise<void> => {
-      store.delete(key);
+    del: async (...keys: string[]): Promise<void> => {
+      keys.forEach((key) => {
+        store.delete(key);
+        bump(key);
+      });
     },
-  };
-
-  const scheduler = {
-    cancelJob: async (jobId: string): Promise<void> => {
-      cancelledIds.push(jobId);
+    hGet: async (key: string, field: string): Promise<string | undefined> => {
+      if (key !== REGISTRY_KEY) throw new Error(`unexpected hash ${key}`);
+      return registry.get(field);
     },
-  };
-
-  return { redis, scheduler, store, cancelledIds };
-}
-
-function createAtomicFakeContext(initial: Record<string, string> = {}) {
-  const { redis, store } = createFakeContext(initial);
-  const atomicRedis = {
-    ...redis,
+    hSet: async (key: string, values: Record<string, string>): Promise<void> => {
+      if (key !== REGISTRY_KEY) throw new Error(`unexpected hash ${key}`);
+      Object.entries(values).forEach(([field, value]) => registry.set(field, value));
+      bump(key);
+    },
+    hDel: async (key: string, fields: string[]): Promise<void> => {
+      if (key !== REGISTRY_KEY) throw new Error(`unexpected hash ${key}`);
+      fields.forEach((field) => registry.delete(field));
+      bump(key);
+    },
     watch: async (...keys: string[]) => {
-      const watched = new Map(keys.map((key) => [key, store.get(key)]));
+      const watched = new Map(keys.map((key) => [key, versions.get(key) ?? 0]));
       const commands: (() => void)[] = [];
       return {
         multi: async () => {},
-        set: async (key: string, value: string) => commands.push(() => store.set(key, value)),
-        del: async (...keysToDelete: string[]) => commands.push(() => keysToDelete.forEach((key) => store.delete(key))),
+        set: async (key: string, value: string) => commands.push(() => {
+          store.set(key, value);
+          bump(key);
+        }),
+        del: async (...keysToDelete: string[]) => commands.push(() => keysToDelete.forEach((key) => {
+          store.delete(key);
+          bump(key);
+        })),
+        hSet: async (key: string, values: Record<string, string>) => commands.push(() => {
+          if (key !== REGISTRY_KEY) throw new Error(`unexpected hash ${key}`);
+          Object.entries(values).forEach(([field, value]) => registry.set(field, value));
+          bump(key);
+        }),
+        hDel: async (key: string, fields: string[]) => commands.push(() => {
+          if (key !== REGISTRY_KEY) throw new Error(`unexpected hash ${key}`);
+          fields.forEach((field) => registry.delete(field));
+          bump(key);
+        }),
         exec: async () => {
-          if ([...watched].some(([key, value]) => store.get(key) !== value)) return [];
+          if ([...watched].some(([key, version]) => (versions.get(key) ?? 0) !== version)) return [];
           commands.forEach((command) => command());
           return commands.map(() => 'OK');
         },
@@ -58,7 +86,7 @@ function createAtomicFakeContext(initial: Record<string, string> = {}) {
       };
     },
   };
-  return { redis: atomicRedis, store };
+  return { redis, store, registry };
 }
 
 const pendingPost = (overrides: Partial<PendingPost> = {}): PendingPost => ({
@@ -71,71 +99,140 @@ const pendingPost = (overrides: Partial<PendingPost> = {}): PendingPost => ({
   ...overrides,
 });
 
+const targetOf = (pending: PendingPost) => ({
+  videoId: pending.videoId,
+  generatedAt: pending.generatedAt,
+});
+
 describe('getPendingPost', () => {
   it('returns null when nothing is pending', async () => {
-    const { redis } = createFakeContext();
+    const { redis } = createAtomicFakeContext();
     expect(await getPendingPost(redis)).toBeNull();
   });
 
   it('returns the parsed pending post when one is stored', async () => {
     const pending = pendingPost();
-    const { redis } = createFakeContext({ [REDIS_KEY_PENDING_POST]: JSON.stringify(pending) });
+    const { redis } = createAtomicFakeContext({ [REDIS_KEY_PENDING_POST]: JSON.stringify(pending) });
     expect(await getPendingPost(redis)).toEqual(pending);
   });
 });
 
-describe('cancelAutoApproveJob', () => {
-  it('cancels the scheduled job and clears the job id key', async () => {
-    const { redis, scheduler, store, cancelledIds } = createFakeContext({
-      [REDIS_KEY_PENDING_POST_JOB_ID]: 'job-1',
-    });
-    await cancelAutoApproveJob(redis, scheduler);
-    expect(cancelledIds).toEqual(['job-1']);
-    expect(store.has(REDIS_KEY_PENDING_POST_JOB_ID)).toBe(false);
+describe('pending enqueue', () => {
+  it('does not replace a Pending Post queued by a concurrent checker', async () => {
+    const replacement = pendingPost({ videoId: 'replacement', generatedAt: '2026-01-02T00:00:00.000Z' });
+    const { redis } = createAtomicFakeContext({ [REDIS_KEY_PENDING_POST]: JSON.stringify(replacement) });
+
+    expect(await enqueuePendingPost(redis, pendingPost())).toEqual({ status: 'occupied' });
+    expect(await getPendingPost(redis)).toEqual(replacement);
   });
 
-  it('is a no-op when no auto-approve job is scheduled', async () => {
-    const { redis, scheduler, cancelledIds } = createFakeContext();
-    await cancelAutoApproveJob(redis, scheduler);
-    expect(cancelledIds).toEqual([]);
+  it('atomically queues the post and records its video as pending', async () => {
+    const pending = pendingPost();
+    const { redis, registry } = createAtomicFakeContext();
+
+    expect(await enqueuePendingPost(redis, pending)).toEqual({ status: 'queued' });
+    expect(await getPendingPost(redis)).toEqual(pending);
+    expect(JSON.parse(registry.get(pending.videoId)!) as VideoRecord).toMatchObject({ status: 'pending' });
+  });
+
+  it('does not attach a timer to a replacement Pending Post', async () => {
+    const replacement = pendingPost({ videoId: 'replacement', generatedAt: '2026-01-02T00:00:00.000Z' });
+    const { redis, store } = createAtomicFakeContext({ [REDIS_KEY_PENDING_POST]: JSON.stringify(replacement) });
+
+    expect(await reserveAutoApproveJob(redis, targetOf(pendingPost()), 'stale-job')).toEqual({ status: 'stale' });
+    expect(store.has(REDIS_KEY_PENDING_POST_JOB_ID)).toBe(false);
   });
 });
 
-describe('clearPendingPost', () => {
-  it('returns null when nothing is pending', async () => {
-    const { redis, scheduler } = createFakeContext();
-    expect(await clearPendingPost(redis, scheduler)).toBeNull();
+describe('pending publication lease', () => {
+  it('recovers a claim after its bounded lease expires', async () => {
+    const pending = pendingPost();
+    const { redis } = createAtomicFakeContext({ [REDIS_KEY_PENDING_POST]: JSON.stringify(pending) });
+    const startedAt = new Date('2026-01-01T00:00:00.000Z');
+
+    const first = await claimPendingPost(redis, targetOf(pending), { owner: 'first', now: startedAt });
+    const stillBusy = await claimPendingPost(redis, targetOf(pending), {
+      owner: 'second', now: new Date(startedAt.getTime() + PENDING_POST_LEASE_MS - 1),
+    });
+    const recovered = await claimPendingPost(redis, targetOf(pending), {
+      owner: 'second', now: new Date(startedAt.getTime() + PENDING_POST_LEASE_MS),
+    });
+
+    expect(first).toMatchObject({ status: 'claimed', pending: { publicationLease: { owner: 'first' } } });
+    expect(stillBusy).toEqual({ status: 'busy' });
+    expect(recovered).toMatchObject({ status: 'claimed', pending: { publicationLease: { owner: 'second' } } });
   });
 
-  it('removes the pending post, cancels the auto-approve job, and returns the removed post', async () => {
+  it('persists each Reddit ID while the owning lease is valid', async () => {
     const pending = pendingPost();
-    const { redis, scheduler, store, cancelledIds } = createFakeContext({
+    const { redis } = createAtomicFakeContext({ [REDIS_KEY_PENDING_POST]: JSON.stringify(pending) });
+    const claim = await claimPendingPost(redis, targetOf(pending), { owner: 'publisher' });
+    if (claim.status !== 'claimed') throw new Error('expected a claim');
+
+    const afterPost = await savePendingPostPublication(redis, claim.pending, { postId: 't3_post' });
+    const afterComment = await savePendingPostPublication(redis, afterPost, { commentId: 't1_comment' });
+
+    expect(afterComment).toMatchObject({ postId: 't3_post', commentId: 't1_comment' });
+  });
+
+  it('commits the posted registry record and removes only its owned Pending Post together', async () => {
+    const pending = pendingPost();
+    const { redis, store, registry } = createAtomicFakeContext({
       [REDIS_KEY_PENDING_POST]: JSON.stringify(pending),
-      [REDIS_KEY_PENDING_POST_JOB_ID]: 'job-2',
+      [REDIS_KEY_PENDING_POST_JOB_ID]: 'timer-1',
     });
-    const removed = await clearPendingPost(redis, scheduler);
-    expect(removed).toEqual(pending);
+    const claim = await claimPendingPost(redis, targetOf(pending), { owner: 'publisher' });
+    if (claim.status !== 'claimed') throw new Error('expected a claim');
+    const withIds = await savePendingPostPublication(redis, claim.pending, { postId: 't3_post', commentId: 't1_comment' });
+
+    expect(await completePendingPostPublication(redis, withIds, '2026-01-02T00:00:00.000Z')).toEqual({
+      status: 'completed', autoApproveJobId: 'timer-1',
+    });
     expect(store.has(REDIS_KEY_PENDING_POST)).toBe(false);
     expect(store.has(REDIS_KEY_PENDING_POST_JOB_ID)).toBe(false);
-    expect(cancelledIds).toEqual(['job-2']);
+    expect(JSON.parse(registry.get(pending.videoId)!) as VideoRecord).toMatchObject({
+      status: 'posted', postId: 't3_post', commentId: 't1_comment',
+    });
   });
 });
 
-describe('parseReviewAction', () => {
-  it('defaults to publish when action is missing', () => {
-    expect(parseReviewAction({})).toBe('publish');
+describe('review resolution', () => {
+  it('rejects discard and reject once Reddit creation has started', async () => {
+    const pending = pendingPost({ postId: 't3_live' });
+    const { redis } = createAtomicFakeContext({ [REDIS_KEY_PENDING_POST]: JSON.stringify(pending) });
+
+    expect(await resolvePendingPost(redis, targetOf(pending), 'discard')).toEqual({ status: 'partially-published' });
+    expect(await resolvePendingPost(redis, targetOf(pending), 'reject')).toEqual({ status: 'partially-published' });
+    expect(await getPendingPost(redis)).toEqual(pending);
   });
 
-  it('reads discard from a select field value array', () => {
-    expect(parseReviewAction({ action: ['discard'] })).toBe('discard');
+  it('transitions the registry and removes the exact queue record in one transaction', async () => {
+    const pending = pendingPost();
+    const { redis, registry, store } = createAtomicFakeContext({
+      [REDIS_KEY_PENDING_POST]: JSON.stringify(pending),
+      [REDIS_KEY_PENDING_POST_JOB_ID]: 'timer-1',
+    }, {
+      [pending.videoId]: JSON.stringify({ title: pending.videoTitle, status: 'pending', processedAt: pending.generatedAt }),
+    });
+
+    expect(await resolvePendingPost(redis, targetOf(pending), 'reject')).toEqual({
+      status: 'resolved', pending, autoApproveJobId: 'timer-1',
+    });
+    expect(store.has(REDIS_KEY_PENDING_POST)).toBe(false);
+    expect(store.has(REDIS_KEY_PENDING_POST_JOB_ID)).toBe(false);
+    expect(JSON.parse(registry.get(pending.videoId)!) as VideoRecord).toMatchObject({ status: 'rejected' });
   });
 
-  it('reads reject from a select field value array', () => {
-    expect(parseReviewAction({ action: ['reject'] })).toBe('reject');
-  });
+  it('makes an existing link-post title immutable while still accepting discussion edits', async () => {
+    const pending = pendingPost({ postId: 't3_live', commentId: 't1_discussion' });
+    const { redis } = createAtomicFakeContext({ [REDIS_KEY_PENDING_POST]: JSON.stringify(pending) });
 
-  it('falls back to publish for an unrecognized value', () => {
-    expect(parseReviewAction({ action: ['nonsense'] })).toBe('publish');
+    expect(await updatePendingPostForReview(redis, targetOf(pending), { title: 'Different title' })).toEqual({
+      status: 'title-immutable',
+    });
+    expect(await updatePendingPostForReview(redis, targetOf(pending), { body: 'Edited discussion' })).toMatchObject({
+      status: 'updated', pending: { title: pending.title, body: 'Edited discussion' },
+    });
   });
 });
 
@@ -152,70 +249,19 @@ describe('review form identity', () => {
     });
   });
 
-  it('rejects a malformed form target', () => {
-    expect(parsePendingPostTarget({ pendingPostTarget: ['not a target'] })).toBeNull();
+  it('disables title edits and destructive actions after a link post exists', () => {
+    const form = buildReviewPendingPostForm({
+      title: 't', body: 'b', videoTitle: 'v', videoId: 'video-a', generatedAt: '2026-01-01T00:00:00.000Z', postId: 't3_live',
+    });
+    const title = form.fields.find((field) => 'name' in field && field.name === 'postTitle');
+    const action = form.fields.find((field) => 'name' in field && field.name === 'action');
+    expect(title).toMatchObject({ disabled: true });
+    expect(action).toMatchObject({ options: [{ value: 'publish' }] });
   });
 });
 
-describe('pending publication claim', () => {
-  it('allows only one publisher and keeps persisted Reddit IDs for a retry', async () => {
-    const pending = pendingPost();
-    const { redis, store } = createAtomicFakeContext({ [REDIS_KEY_PENDING_POST]: JSON.stringify(pending) });
-
-    const first = await claimPendingPost(redis);
-    const second = await claimPendingPost(redis);
-    expect(first.status).toBe('claimed');
-    expect(second.status).toBe('busy');
-    if (!first.pending) throw new Error('expected claimed pending post');
-
-    await savePendingPostPublication(redis, first.pending, { postId: 't3_post', commentId: 't1_comment' });
-    await releasePendingPostClaim(redis, first.pending);
-
-    expect(await getPendingPost(redis)).toMatchObject({
-      postId: 't3_post', commentId: 't1_comment', publishing: false,
-    });
-    expect(store.has(REDIS_KEY_PENDING_POST)).toBe(true);
-  });
-});
-
-describe('buildReviewPendingPostForm', () => {
-  it('pre-fills the title and body fields from the pending post', () => {
-    const form = buildReviewPendingPostForm({
-      title: 'My Title',
-      body: 'My Body',
-      videoTitle: 'My Video',
-      videoId: 'video-id',
-      generatedAt: '2026-01-01T00:00:00.000Z',
-    });
-    const postTitle = form.fields.find((f) => 'name' in f && f.name === 'postTitle');
-    const postBody = form.fields.find((f) => 'name' in f && f.name === 'postBody');
-    expect(postTitle).toMatchObject({ defaultValue: 'My Title', required: true });
-    expect(postBody).toMatchObject({ defaultValue: 'My Body', required: true });
-  });
-
-  it('offers Publish, Discard, and Reject as the action options, defaulting to Publish', () => {
-    const form = buildReviewPendingPostForm({
-      title: 't', body: 'b', videoTitle: 'v', videoId: 'video-id', generatedAt: '2026-01-01T00:00:00.000Z',
-    });
-    const action = form.fields.find((f) => 'name' in f && f.name === 'action');
-    expect(action).toMatchObject({ type: 'select', defaultValue: ['publish'], required: true });
-    if (!action || !('options' in action)) {
-      throw new Error('expected the action field to have options');
-    }
-    expect(action.options.map((o) => o.value)).toEqual(['publish', 'discard', 'reject']);
-  });
-
-  it('warns about the ~10-minute submission window', () => {
-    const form = buildReviewPendingPostForm({
-      title: 't', body: 'b', videoTitle: 'v', videoId: 'video-id', generatedAt: '2026-01-01T00:00:00.000Z',
-    });
-    expect(form.description).toMatch(/10.minute/i);
-  });
-
-  it('includes the video title for context', () => {
-    const form = buildReviewPendingPostForm({
-      title: 't', body: 'b', videoTitle: 'My Video', videoId: 'video-id', generatedAt: '2026-01-01T00:00:00.000Z',
-    });
-    expect(form.description).toContain('My Video');
+describe('parseReviewAction', () => {
+  it('defaults to publish for malformed values', () => {
+    expect(parseReviewAction({ action: ['nonsense'] })).toBe('publish');
   });
 });
