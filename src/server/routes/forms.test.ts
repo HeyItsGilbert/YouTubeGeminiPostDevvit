@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const context = { appVersion: '1.0.0' };
+const reddit = { getCurrentUsername: vi.fn() };
+
 const store = new Map<string, string>();
 const scheduler = {
   cancelJob: vi.fn(),
@@ -32,14 +35,15 @@ const redis = {
 };
 
 vi.mock('@devvit/web/server', () => ({
-  reddit: { getCurrentUsername: vi.fn() },
+  context,
+  reddit,
   redis,
   scheduler,
 }));
 const { forms } = await import('./forms.js');
 
-async function submit(body: unknown) {
-  return forms.request('/review-pending-post-submit', {
+async function submit(body: unknown, path = '/review-pending-post-submit') {
+  return forms.request(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -69,5 +73,24 @@ describe('Review pending post form', () => {
       showToast: 'This review form is stale. Open "Review pending post" and try again.',
     });
     expect(JSON.parse(store.get('pending_post')!)).toEqual(newerPending);
+  });
+});
+
+describe('Check for new videos form', () => {
+  beforeEach(() => {
+    context.appVersion = '1.0.0';
+    reddit.getCurrentUsername.mockResolvedValue(undefined);
+    scheduler.runJob.mockClear();
+  });
+
+  it('does not forward a stale playtest force-repost request on a release install', async () => {
+    const response = await submit({ forceRepost: true }, '/check-new-videos-submit');
+
+    expect(await response.json()).toEqual({
+      showToast: 'Force repost is available only on a playtest install. Checking for new videos normally.',
+    });
+    expect(scheduler.runJob).toHaveBeenCalledWith(expect.objectContaining({
+      data: { manual: true, forceRepost: false },
+    }));
   });
 });
