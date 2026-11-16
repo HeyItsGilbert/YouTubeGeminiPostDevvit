@@ -30,7 +30,8 @@ Moderators get three items in the subreddit's **"…"** menu (next to Mod Tools)
 - **Check for new videos** — run a check immediately.
 - **Review pending post** — when mod approval is enabled, edit the pending post,
   then publish it, discard it (the next check treats the video as unseen), or
-  reject the video (never post it).
+  reject the video (never post it). If another moderator resolves or replaces
+  the post while the form is open, reopen the menu to review the current post.
 
 On any episode post, the post menu offers **Regenerate discussion**: rewrite the
 discussion comment with fresh Gemini output, optionally with a different model,
