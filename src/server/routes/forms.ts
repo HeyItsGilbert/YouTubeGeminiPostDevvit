@@ -12,11 +12,12 @@ import type { UiResponse } from '@devvit/web/shared';
 import { reddit, redis, scheduler } from '@devvit/web/server';
 
 import {
-  REDIS_KEY_PENDING_POST,
   cancelAutoApproveJob,
-  clearPendingPost,
-  getPendingPost,
+  cancelAutoApproveJobById,
+  parsePendingPostTarget,
   parseReviewAction,
+  resolvePendingPost,
+  updatePendingPostForReview,
 } from '../pendingPost.js';
 import { deleteVideoRecord, setVideoRecord } from '../videoRegistry.js';
 
@@ -27,46 +28,58 @@ const ALREADY_RESOLVED_TOAST =
 
 type ReviewFormValues = {
   action?: string[] | string;
+  pendingPostTarget?: string[] | string;
   postTitle?: string;
   postBody?: string;
 };
 
 forms.post('/review-pending-post-submit', async (c) => {
   const values = await c.req.json<ReviewFormValues>();
+  const target = parsePendingPostTarget(values);
+  if (!target) {
+    return c.json<UiResponse>({ showToast: 'This review form is invalid. Open "Review pending post" and try again.' }, 200);
+  }
   const action = parseReviewAction(values);
 
-  if (action === 'discard') {
-    const pending = await clearPendingPost(redis, scheduler);
-    if (!pending) {
-      return c.json<UiResponse>({ showToast: ALREADY_RESOLVED_TOAST }, 200);
+  if (action === 'discard' || action === 'reject') {
+    const resolution = await resolvePendingPost(redis, target);
+    if (resolution.status !== 'resolved') {
+      const showToast = resolution.status === 'stale'
+        ? 'This review form is stale. Open "Review pending post" and try again.'
+        : resolution.status === 'busy'
+          ? 'This pending post is already being published. Try again shortly.'
+          : ALREADY_RESOLVED_TOAST;
+      return c.json<UiResponse>({ showToast }, 200);
     }
-    await deleteVideoRecord(redis, pending.videoId);
-    return c.json<UiResponse>({ showToast: 'Pending post discarded.' }, 200);
-  }
-
-  if (action === 'reject') {
-    const pending = await clearPendingPost(redis, scheduler);
-    if (!pending) {
-      return c.json<UiResponse>({ showToast: ALREADY_RESOLVED_TOAST }, 200);
+    await cancelAutoApproveJobById(scheduler, resolution.autoApproveJobId);
+    if (action === 'discard') {
+      await deleteVideoRecord(redis, resolution.pending.videoId);
+      return c.json<UiResponse>({ showToast: 'Pending post discarded.' }, 200);
     }
-    await setVideoRecord(redis, pending.videoId, {
-      title: pending.videoTitle,
+    await setVideoRecord(redis, resolution.pending.videoId, {
+      title: resolution.pending.videoTitle,
       status: 'rejected',
       processedAt: new Date().toISOString(),
     });
-    return c.json<UiResponse>({ showToast: `Rejected "${pending.videoTitle}". It will not be posted.` }, 200);
+    return c.json<UiResponse>({ showToast: `Rejected "${resolution.pending.videoTitle}". It will not be posted.` }, 200);
   }
 
-  // Publish — write any edits back, then trigger post_pending_episode now.
-  const pending = await getPendingPost(redis);
-  if (!pending) {
-    return c.json<UiResponse>({ showToast: ALREADY_RESOLVED_TOAST }, 200);
+  // Publish — validate the exact form target and write its edits atomically.
+  const update = await updatePendingPostForReview(redis, target, {
+    ...(values.postTitle !== undefined ? { title: values.postTitle.trim() } : {}),
+    ...(values.postBody !== undefined ? { body: values.postBody.trim() } : {}),
+  });
+  if (update.status !== 'updated') {
+    const showToast = update.status === 'stale'
+      ? 'This review form is stale. Open "Review pending post" and try again.'
+      : update.status === 'busy'
+        ? 'This pending post is already being published. Try again shortly.'
+        : ALREADY_RESOLVED_TOAST;
+    return c.json<UiResponse>({ showToast }, 200);
   }
-  pending.title = (values.postTitle ?? pending.title).trim();
-  pending.body = (values.postBody ?? pending.body).trim();
-  await redis.set(REDIS_KEY_PENDING_POST, JSON.stringify(pending));
 
-  // Publishing now supersedes any auto-approve timer.
+  // Publishing now supersedes any auto-approve timer. A timer that already
+  // started cannot duplicate the post because the job claims it atomically.
   await cancelAutoApproveJob(redis, scheduler);
 
   const triggeredBy = await reddit.getCurrentUsername();

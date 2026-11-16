@@ -4,9 +4,13 @@ import {
   REDIS_KEY_PENDING_POST_JOB_ID,
   buildReviewPendingPostForm,
   cancelAutoApproveJob,
+  claimPendingPost,
   clearPendingPost,
   getPendingPost,
+  parsePendingPostTarget,
   parseReviewAction,
+  releasePendingPostClaim,
+  savePendingPostPublication,
   type PendingPost,
 } from './pendingPost.js';
 
@@ -32,6 +36,29 @@ function createFakeContext(initial: Record<string, string> = {}) {
   };
 
   return { redis, scheduler, store, cancelledIds };
+}
+
+function createAtomicFakeContext(initial: Record<string, string> = {}) {
+  const { redis, store } = createFakeContext(initial);
+  const atomicRedis = {
+    ...redis,
+    watch: async (...keys: string[]) => {
+      const watched = new Map(keys.map((key) => [key, store.get(key)]));
+      const commands: (() => void)[] = [];
+      return {
+        multi: async () => {},
+        set: async (key: string, value: string) => commands.push(() => store.set(key, value)),
+        del: async (...keysToDelete: string[]) => commands.push(() => keysToDelete.forEach((key) => store.delete(key))),
+        exec: async () => {
+          if ([...watched].some(([key, value]) => store.get(key) !== value)) return [];
+          commands.forEach((command) => command());
+          return commands.map(() => 'OK');
+        },
+        unwatch: async () => {},
+      };
+    },
+  };
+  return { redis: atomicRedis, store };
 }
 
 const pendingPost = (overrides: Partial<PendingPost> = {}): PendingPost => ({
@@ -112,12 +139,53 @@ describe('parseReviewAction', () => {
   });
 });
 
+describe('review form identity', () => {
+  it('binds the form to the pending video and generation', () => {
+    const form = buildReviewPendingPostForm({
+      title: 't', body: 'b', videoTitle: 'v', videoId: 'video-a', generatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const target = form.fields.find((field) => 'name' in field && field.name === 'pendingPostTarget');
+    expect(target).toMatchObject({ type: 'select', required: true });
+    if (!target || !('defaultValue' in target)) throw new Error('expected pending post target');
+    expect(parsePendingPostTarget({ pendingPostTarget: target.defaultValue })).toEqual({
+      videoId: 'video-a', generatedAt: '2026-01-01T00:00:00.000Z',
+    });
+  });
+
+  it('rejects a malformed form target', () => {
+    expect(parsePendingPostTarget({ pendingPostTarget: ['not a target'] })).toBeNull();
+  });
+});
+
+describe('pending publication claim', () => {
+  it('allows only one publisher and keeps persisted Reddit IDs for a retry', async () => {
+    const pending = pendingPost();
+    const { redis, store } = createAtomicFakeContext({ [REDIS_KEY_PENDING_POST]: JSON.stringify(pending) });
+
+    const first = await claimPendingPost(redis);
+    const second = await claimPendingPost(redis);
+    expect(first.status).toBe('claimed');
+    expect(second.status).toBe('busy');
+    if (!first.pending) throw new Error('expected claimed pending post');
+
+    await savePendingPostPublication(redis, first.pending, { postId: 't3_post', commentId: 't1_comment' });
+    await releasePendingPostClaim(redis, first.pending);
+
+    expect(await getPendingPost(redis)).toMatchObject({
+      postId: 't3_post', commentId: 't1_comment', publishing: false,
+    });
+    expect(store.has(REDIS_KEY_PENDING_POST)).toBe(true);
+  });
+});
+
 describe('buildReviewPendingPostForm', () => {
   it('pre-fills the title and body fields from the pending post', () => {
     const form = buildReviewPendingPostForm({
       title: 'My Title',
       body: 'My Body',
       videoTitle: 'My Video',
+      videoId: 'video-id',
+      generatedAt: '2026-01-01T00:00:00.000Z',
     });
     const postTitle = form.fields.find((f) => 'name' in f && f.name === 'postTitle');
     const postBody = form.fields.find((f) => 'name' in f && f.name === 'postBody');
@@ -126,7 +194,9 @@ describe('buildReviewPendingPostForm', () => {
   });
 
   it('offers Publish, Discard, and Reject as the action options, defaulting to Publish', () => {
-    const form = buildReviewPendingPostForm({ title: 't', body: 'b', videoTitle: 'v' });
+    const form = buildReviewPendingPostForm({
+      title: 't', body: 'b', videoTitle: 'v', videoId: 'video-id', generatedAt: '2026-01-01T00:00:00.000Z',
+    });
     const action = form.fields.find((f) => 'name' in f && f.name === 'action');
     expect(action).toMatchObject({ type: 'select', defaultValue: ['publish'], required: true });
     if (!action || !('options' in action)) {
@@ -136,12 +206,16 @@ describe('buildReviewPendingPostForm', () => {
   });
 
   it('warns about the ~10-minute submission window', () => {
-    const form = buildReviewPendingPostForm({ title: 't', body: 'b', videoTitle: 'v' });
+    const form = buildReviewPendingPostForm({
+      title: 't', body: 'b', videoTitle: 'v', videoId: 'video-id', generatedAt: '2026-01-01T00:00:00.000Z',
+    });
     expect(form.description).toMatch(/10.minute/i);
   });
 
   it('includes the video title for context', () => {
-    const form = buildReviewPendingPostForm({ title: 't', body: 'b', videoTitle: 'My Video' });
+    const form = buildReviewPendingPostForm({
+      title: 't', body: 'b', videoTitle: 'My Video', videoId: 'video-id', generatedAt: '2026-01-01T00:00:00.000Z',
+    });
     expect(form.description).toContain('My Video');
   });
 });

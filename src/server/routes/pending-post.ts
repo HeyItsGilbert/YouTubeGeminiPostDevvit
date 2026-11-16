@@ -15,7 +15,14 @@ import { context, reddit, redis, settings } from '@devvit/web/server';
 
 import { createEpisodePost, applyBotFlair, applyFlair, managePins } from '../postManager.js';
 import { setVideoRecord } from '../videoRegistry.js';
-import { getPendingPost, REDIS_KEY_PENDING_POST, REDIS_KEY_PENDING_POST_JOB_ID } from '../pendingPost.js';
+import {
+  REDIS_KEY_PENDING_POST,
+  REDIS_KEY_PENDING_POST_JOB_ID,
+  claimPendingPost,
+  releasePendingPostClaim,
+  savePendingPostPublication,
+  type PendingPost,
+} from '../pendingPost.js';
 import { sendFailureNotification, FAILURE_HELP } from '../notifications.js';
 
 export const pendingPost = new Hono();
@@ -23,13 +30,15 @@ export const pendingPost = new Hono();
 pendingPost.post('/post-pending-episode', async (c) => {
   const event = await c.req.json<TaskRequest<{ triggeredBy?: string }>>();
   let notificationMods: string[] = [];
+  let claimed: PendingPost | undefined;
 
   try {
-    const pending = await getPendingPost(redis);
-    if (!pending) {
-      console.log('[bot] post_pending_episode: no pending post found (already published, discarded, or rejected).');
+    const claim = await claimPendingPost(redis);
+    if (claim.status !== 'claimed') {
+      console.log(`[bot] post_pending_episode: pending post is ${claim.status}.`);
       return c.json<TaskResponse>({}, 200);
     }
+    claimed = claim.pending;
 
     const subredditName = context.subredditName;
     const [flairName, botFlairEmoji, botFlairText, notificationModsSetting] = await Promise.all([
@@ -40,9 +49,17 @@ pendingPost.post('/post-pending-episode', async (c) => {
     ]);
     notificationMods = notificationModsSetting.split(',').map(u => u.trim()).filter(Boolean);
 
-    console.log(`[bot] Posting pending episode: "${pending.title}"`);
-    const { postId, commentId } = await createEpisodePost(reddit, subredditName, pending.title, pending.url, pending.body);
-    console.log(`[bot] Created post ${postId} with discussion comment ${commentId}`);
+    let { postId, commentId } = claimed;
+    if (!postId || !commentId) {
+      console.log(`[bot] Posting pending episode: "${claimed.title}"`);
+      const created = await createEpisodePost(reddit, subredditName, claimed.title, claimed.url, claimed.body);
+      postId = created.postId;
+      commentId = created.commentId;
+      // Pinning can fail after Reddit has accepted both creations. Store this
+      // progress first so the next attempt finishes the existing post.
+      await savePendingPostPublication(redis, claimed, { postId, commentId });
+      console.log(`[bot] Created post ${postId} with discussion comment ${commentId}`);
+    }
 
     await Promise.all([
       flairName ? applyFlair(reddit, subredditName, postId, flairName) : Promise.resolve(),
@@ -50,23 +67,21 @@ pendingPost.post('/post-pending-episode', async (c) => {
       managePins(reddit, redis, postId),
     ]);
 
-    await setVideoRecord(redis, pending.videoId, {
-      title: pending.videoTitle,
+    await setVideoRecord(redis, claimed.videoId, {
+      title: claimed.videoTitle,
       status: 'posted',
       postId,
       commentId,
       processedAt: new Date().toISOString(),
     });
 
-    // Clean up pending state — the auto-approve job (if any) either just
-    // fired (this invocation) or was already cancelled by the mod action
-    // that triggered this run, so only the Redis keys need clearing here.
+    // The successful claim is still the only writer for this record.
     await redis.del(REDIS_KEY_PENDING_POST);
     await redis.del(REDIS_KEY_PENDING_POST_JOB_ID);
-
-    console.log(`[bot] Pending episode posted: "${pending.title}"`);
+    console.log(`[bot] Pending episode posted: "${claimed.title}"`);
   } catch (err) {
     console.error(`[bot] Failed to post pending episode: ${err}`);
+    if (claimed) await releasePendingPostClaim(redis, claimed);
     const triggeredBy = event.data?.triggeredBy ?? await redis.get('check_triggered_by');
     await sendFailureNotification(
       reddit,
